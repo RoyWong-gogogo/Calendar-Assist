@@ -1,4 +1,8 @@
-# Google Calendar API + OAuth（仅必要依赖）
+# Microsoft Graph / Outlook Calendar（当前默认后端）
+msal>=1.31
+requests>=2.32
+
+# Google Calendar API + OAuth（过渡期保留，Outlook 验证通过后移除）
 google-api-python-client>=2.100
 google-auth>=2.23
 google-auth-httplib2>=0.2

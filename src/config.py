@@ -38,6 +38,27 @@ def _resolve_path(env_key: str, default: Path) -> Path:
 # 解析“今天/明天”等相对日期、以及 naive datetime 时使用的时区。
 CALENDAR_TIMEZONE: str = os.environ.get("CALENDAR_TIMEZONE", "Asia/Shanghai")
 
+# ---- 日历服务提供方 ----
+# 过渡期 Outlook（默认）与 Google 并存；Outlook 验证通过后将移除 Google 实现。
+CALENDAR_PROVIDER: str = os.environ.get("CALENDAR_PROVIDER") or "outlook"
+
+# ---- Outlook Calendar（Microsoft Graph）----
+# Azure App registration 的 Application (client) ID（使用 Outlook 时必填）
+OUTLOOK_CLIENT_ID: str = os.environ.get("OUTLOOK_CLIENT_ID") or ""
+
+# Azure App registration 的 Directory (tenant) ID。
+# 工作或学校账号建议填写自己组织的租户 ID；留空使用 "organizations"。
+OUTLOOK_TENANT_ID: str = os.environ.get("OUTLOOK_TENANT_ID") or "organizations"
+
+# 授权方式: device（设备代码流，默认，无需在 Azure 配置重定向 URI）
+#           | interactive（交互式浏览器流程）
+OUTLOOK_AUTH_FLOW: str = os.environ.get("OUTLOOK_AUTH_FLOW") or "device"
+
+# MSAL token 缓存文件（首次授权后自动生成）
+OUTLOOK_TOKEN_FILE: Path = _resolve_path(
+    "OUTLOOK_TOKEN_FILE", PROJECT_ROOT / "credentials" / "outlook_token.bin"
+)
+
 # 要操作的 Google 日历 ID，"primary" 即用户主日历。
 GOOGLE_CALENDAR_ID: str = os.environ.get("GOOGLE_CALENDAR_ID", "primary")
 

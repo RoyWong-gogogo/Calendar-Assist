@@ -1,4 +1,4 @@
-"""查询 Google Calendar 日程。
+"""查询日历日程（Outlook / Google 后端由 CALENDAR_PROVIDER 决定）。
 
 用法（项目根目录）：
     python scripts/list_events.py                      # 今天
@@ -7,7 +7,7 @@
     python scripts/list_events.py --from 2026-09-10T09:00 --to 2026-09-10T18:00
     python scripts/list_events.py --json               # JSON 输出（便于程序读取）
 
-Codex 也可以直接调用 src.calendar_service.CalendarService。
+Codex 也可以直接调用 src.service_factory.get_calendar_service_class()。
 """
 
 from __future__ import annotations
@@ -21,9 +21,9 @@ from pathlib import Path
 # 让脚本在任意工作目录下都能导入 src 包
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.calendar_service import CalendarApiError, CalendarService
+from src.config import CALENDAR_PROVIDER
 from src.datetime_utils import day_bounds, get_tz, parse_iso, to_iso
-from src.google_auth import AuthError
+from src.service_factory import get_calendar_service_class
 
 
 def main() -> int:
@@ -46,17 +46,16 @@ def main() -> int:
         else:
             start, end = day_bounds(args.date)
 
-        service = CalendarService()
+        ServiceClass = get_calendar_service_class()
+        service = ServiceClass()
         events = service.list_events(start, end)
-    except AuthError as exc:
-        print(f"[OAuth 错误] {exc}", file=sys.stderr)
+    except RuntimeError as exc:
+        # AuthError / CalendarApiError / OutlookApiError 均为 RuntimeError 子类
+        print(f"[日历错误] {exc}", file=sys.stderr)
         return 1
     except ValueError as exc:
         print(f"[参数错误] {exc}", file=sys.stderr)
         return 2
-    except CalendarApiError as exc:
-        print(f"[Calendar API 错误] {exc}", file=sys.stderr)
-        return 3
 
     if args.json:
         payload = [
@@ -75,7 +74,7 @@ def main() -> int:
         return 0
 
     tz = get_tz()
-    print(f"日历: {service.calendar_id} | 时区: {tz.key}")
+    print(f"日历: {service.calendar_id}（{CALENDAR_PROVIDER}） | 时区: {tz.key}")
     print(f"范围: {to_iso(start)} ~ {to_iso(end)}")
     if not events:
         print("（该时间段内没有日程）")
