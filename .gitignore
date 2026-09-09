@@ -1,0 +1,24 @@
+# OAuth 凭证与 token —— 绝不提交
+credentials/*
+!credentials/README.md
+
+# 本机配置
+.env
+
+# venv bootstrap 临时目录（沙箱环境产物，可安全删除）
+.tmp-bootstrap/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 工具缓存
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 操作系统
+.DS_Store
+Thumbs.db
