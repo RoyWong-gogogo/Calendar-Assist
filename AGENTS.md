@@ -10,6 +10,8 @@ calendar-agent 是一个轻量级的个人日程助手。**Codex 对话窗口本
 
 当前默认接入 **Outlook Calendar（Microsoft Graph API）**（用户的 Google Calendar 无法完成登录，已切换到微软体系）。Google 实现过渡期保留在 `src/google_auth.py` / `src/calendar_service.py`，可通过 `CALENDAR_PROVIDER=google` 切换；**Outlook 验证通过后将删除 Google 实现**。
 
+应用注册采用路径 B（兜底）：用个人 Microsoft 账号注册多租户应用，授权时用工作账号登录（`OUTLOOK_TENANT_ID=organizations`），从而读写工作邮箱日历；详见 README「Outlook Calendar 接入」。
+
 后端由 `src/config.py` 的 `CALENDAR_PROVIDER` 控制（默认 `outlook`），通过 `src/service_factory.py` 选择具体实现；两个后端的 `list_events` 返回结构完全一致。
 
 ## 不可违反的原则

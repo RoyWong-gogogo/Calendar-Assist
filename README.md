@@ -33,7 +33,9 @@ py -3.14 -m venv .venv
 
 ### 第 1 步：注册 Azure 应用（一次性，人工步骤）
 
-使用你的 Microsoft 365 工作/学校账号：
+有两条路径，**当前采用路径 B**（公司工作账号登录 Azure 门户时报 AADSTS500011，路径 A 走不通）。
+
+#### 路径 A：用工作账号注册单租户应用（组织允许时）
 
 1. 打开 <https://portal.azure.com/>，进入 **Microsoft Entra ID → App registrations → New registration**。
    如果组织禁止普通用户注册应用，需要请 IT 管理员协助完成本步。
@@ -49,13 +51,34 @@ py -3.14 -m venv .venv
 5. 左侧 **API permissions** → **Add a permission** → **Microsoft Graph** → **Delegated permissions** → 勾选 **Calendars.ReadWrite** → **Add permissions**。
    - 如果登录时提示需要管理员批准，说明组织策略要求管理员同意，需要 IT 管理员在该页面点击 **Grant admin consent for <组织名>**。
 
+#### 路径 B：用个人 Microsoft 账号注册多租户应用（当前采用的兜底）
+
+前提：有一个个人 Microsoft 账号（outlook.com / hotmail.com / live.com）。应用注册在个人账号自己的默认目录下，公司不参与注册；日历数据仍通过**工作账号**授权读写，与工作邮箱日历完全互通（会议邀请照常落在工作日历；Session 2 的 create_event 发出的邀请也来自工作邮箱）。
+
+1. 用无痕窗口打开 <https://portal.azure.com/>，用**个人** Microsoft 账号登录。首次进入会自动获得一个 Default Directory，没有 Azure 订阅也能注册应用（忽略"没有订阅"的提示，在顶部搜索框搜 **App registrations**）。
+2. **New registration**，填写：
+   - Name：`calendar-agent`
+   - Supported account types：**Accounts in any organizational directory (Any Microsoft Entra ID tenant - Multitenant) and personal Microsoft accounts**
+   - Redirect URI：留空（设备代码流不需要）
+3. 在 Overview 页复制 **Application (client) ID** → 填入 `.env` 的 `OUTLOOK_CLIENT_ID`。
+4. 左侧 **Authentication** → 底部 **Allow public client flows** → **Yes** → Save。（设备代码流必需，不改会报 AADSTS7000218）
+5. 左侧 **API permissions** → **Add a permission** → **Microsoft Graph** → **Delegated permissions** → 勾选 **Calendars.ReadWrite** → **Add permissions**。
+
+路径 B 首次授权时（设备码登录）有两种可能结果，取决于组织的用户同意策略：
+
+- 同意页直接放行 → 授权完成，正常读写工作日历。
+- 提示**"需要管理员批准 / Approval required"** → 组织只允许管理员同意 `Calendars.ReadWrite` 这类高影响权限，兜底路径走不通，只能请 IT 管理员批准该应用，或按路径 A 在组织内注册。
+
+两点透明说明：授权成功后，该应用会以"用户已同意的应用"出现在公司租户的 Enterprise applications 列表里（严格的 IT 环境能看到）；应用注册方是你的个人账号，请仅自用。若设备码流程被组织的条件访问策略阻止，可在 `.env` 设 `OUTLOOK_AUTH_FLOW=interactive`（需在 Azure 给应用添加 http://localhost 重定向 URI）。
+
 ### 第 2 步：填写 .env
 
 项目根目录创建 `.env`（已被 Git 忽略；也可直接编辑已生成的模板）：
 
 ```ini
 OUTLOOK_CLIENT_ID=粘贴-Application-client-ID
-OUTLOOK_TENANT_ID=粘贴-Directory-tenant-ID
+# 路径 A：粘贴 Directory (tenant) ID；路径 B（当前）：organizations
+OUTLOOK_TENANT_ID=organizations
 ```
 
 ### 第 3 步：首次授权并验证
@@ -91,7 +114,7 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 | `CALENDAR_PROVIDER` | `outlook` | 日历后端：`outlook` / `google`（过渡期） |
 | `CALENDAR_TIMEZONE` | `Asia/Shanghai` | 解析日期时间的默认时区（IANA 名称） |
 | `OUTLOOK_CLIENT_ID` | （空） | Azure App registration 的 Application (client) ID |
-| `OUTLOOK_TENANT_ID` | `organizations` | Azure Directory (tenant) ID，工作/学校账号建议填写 |
+| `OUTLOOK_TENANT_ID` | `organizations` | 路径 A：组织租户 ID；路径 B（当前）：`organizations`；个人账号日历：`common` |
 | `OUTLOOK_AUTH_FLOW` | `device` | `device` 设备代码流 / `interactive` 浏览器流程（后者需在 Azure 配置重定向 URI） |
 | `OUTLOOK_TOKEN_FILE` | `credentials/outlook_token.bin` | MSAL token 缓存路径 |
 | `GOOGLE_CALENDAR_ID` | `primary` | Google 日历 ID（仅 provider=google） |
