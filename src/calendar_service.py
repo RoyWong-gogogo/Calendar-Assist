@@ -1,7 +1,8 @@
 """Google Calendar API 的薄封装。
 
 当前不可用（Google 登录无法完成，仅保留代码）。list_events 完整实现；
-create_event 抛出 NotImplementedError；find_free_time 基于查询结果计算。
+写入操作（create/update/delete）抛出 NotImplementedError；
+find_free_time 基于查询结果计算。
 OAuth 细节独立在 src/google_auth.py。
 """
 
@@ -84,6 +85,27 @@ class CalendarService:
         """在 [start, end) 内返回所有 ≥ duration_minutes 的空闲区间。"""
         busy = self.list_events(start, end)
         return find_free_slots(busy, start, end, timedelta(minutes=duration_minutes))
+
+    def get_event(self, *args, **kwargs) -> dict:
+        """Google 后端当前不可用。"""
+        raise NotImplementedError(
+            "Google 后端当前不可用（Google 登录未打通），get_event 未实现。"
+            "当前主后端为 Outlook（CALENDAR_PROVIDER=outlook）。"
+        )
+
+    def update_event(self, *args, **kwargs) -> dict:
+        """Google 后端当前不可用。"""
+        raise NotImplementedError(
+            "Google 后端当前不可用（Google 登录未打通），update_event 未实现。"
+            "当前主后端为 Outlook（CALENDAR_PROVIDER=outlook）。"
+        )
+
+    def delete_event(self, *args, **kwargs) -> None:
+        """Google 后端当前不可用。"""
+        raise NotImplementedError(
+            "Google 后端当前不可用（Google 登录未打通），delete_event 未实现。"
+            "当前主后端为 Outlook（CALENDAR_PROVIDER=outlook）。"
+        )
 
 
 def _to_event_dict(item: dict) -> dict:

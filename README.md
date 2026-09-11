@@ -13,8 +13,11 @@
 | 查询日程 `list_events` | 已实现（ICS / Outlook / Google 多后端） |
 | 创建日程 `create_event` | 已实现（Outlook 后端；ICS 只读 / Google 不可用，调用会明确报错） |
 | 查询空闲时间 `find_free_time` | 已实现（全部后端；v0.1 将日历上所有事件视为忙碌） |
+| 修改日程 `update_event` | 已实现（Outlook 后端；预览 + 冲突检查 + --yes 确认） |
+| 删除日程 `delete_event` | 已实现（Outlook 后端；预览 + --yes 确认） |
+| 事件搜索 `search_events` | 已实现（时间范围 + 关键词确定性匹配） |
 
-修改、删除日程暂不支持；测试创建的日程需要在 Outlook 网页版手动删除。
+修改 / 删除走安全流程：搜索 → 匹配候选（多个时人工选择）→ 展示目标 → 预览（含冲突提示）→ `--yes` 确认 → 按 event id 执行。
 
 ## 环境要求
 
@@ -159,6 +162,15 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 
 # 查找空闲时间（返回所有可容纳该时长的连续区间）
 ./.venv/Scripts/python.exe scripts/find_free_time.py --from 2026-09-14T09:00 --to 2026-09-14T18:00 --duration 60
+
+# 搜索日程（修改/删除第一步：拿真实 event id）
+./.venv/Scripts/python.exe scripts/search_events.py --date 2026-09-14 --query 雅江
+
+# 修改日程（默认预览原→新并做冲突检查，--yes 才执行）
+./.venv/Scripts/python.exe scripts/update_event.py --event-id <id> --start 2026-09-14T16:00 --duration 60 --yes
+
+# 删除日程（默认预览目标，--yes 才执行）
+./.venv/Scripts/python.exe scripts/delete_event.py --event-id <id> --yes
 ```
 
 ## 配置
@@ -194,8 +206,10 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 │   ├── service_factory.py    # 按 CALENDAR_PROVIDER 选择后端
 │   ├── ics_service.py        # ICS 订阅后端（只读后备）
 │   ├── outlook_auth.py       # Microsoft OAuth（MSAL 设备码流，中国区）
-│   ├── outlook_service.py    # Microsoft Graph 日历封装（中国区，读+写）
+│   ├── outlook_service.py    # Microsoft Graph 日历封装（中国区，读+写+改+删）
 │   ├── free_time.py          # 空闲时间纯算法（后端无关）
+│   ├── conflicts.py          # 冲突检测纯算法（后端无关）
+│   ├── event_match.py        # 事件关键词匹配（后端无关）
 │   ├── google_auth.py        # Google OAuth（过渡期保留）
 │   ├── calendar_service.py   # Google Calendar 封装（过渡期保留）
 │   └── datetime_utils.py     # timezone-aware 日期时间工具
@@ -203,11 +217,17 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 │   ├── list_events.py        # 查询日程
 │   ├── create_event.py       # 创建日程
 │   ├── find_free_time.py     # 查找空闲时间
+│   ├── search_events.py      # 搜索日程（修改/删除第一步）
+│   ├── update_event.py       # 修改日程（预览+冲突检查+确认）
+│   ├── delete_event.py       # 删除日程（预览+确认）
 │   └── register_outlook_app.py # 应用注册引导（门户被租户限制时的一次性工具）
 └── tests/
     ├── test_datetime_utils.py
     ├── test_free_time.py
     ├── test_create_event.py
+    ├── test_conflicts.py
+    ├── test_event_match.py
+    ├── test_update_delete.py
     ├── test_ics_parsing.py
     ├── test_outlook_cloud.py
     └── test_outlook_parsing.py
@@ -225,4 +245,6 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 
 - Session 1：项目骨架 + OAuth + `list_events`（已完成；历经 Google → Outlook 全球端点 → 世纪互联中国区端点的摸索，最终落在中国区 Graph）
 - Session 2：`create_event` + `find_free_time`（已完成，基于中国区 Graph 读写）
-- 之后候选：`create_event` 支持与会人（自动发会议邀请）、修改 / 删除日程、`find_free_time` 区分 showAs 空闲状态、清理 Google / ICS 备用后端
+- Session 3：`update_event` + `delete_event` + 事件搜索匹配 + 冲突检查（已完成，全部基于 mock 测试）
+- **当前建议：真实使用一到两周**，记录不顺手的细节（"下午"的边界、默认时长、默认提醒等），作为下一阶段的输入
+- 之后候选：`create_event` 支持与会人（自动发会议邀请）、`find_free_time` 区分 showAs 空闲状态、清理 Google / ICS 备用后端

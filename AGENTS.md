@@ -34,8 +34,11 @@ v0.1 的三个核心能力（均已实现）：
 - 查询日程 `list_events` — 已实现（ICS / Outlook / Google 多后端）
 - 创建日程 `create_event` — 已实现（仅 Outlook 后端；ICS 只读 / Google 不可用，调用会明确报错）
 - 查询空闲时间 `find_free_time` — 已实现（全部后端；v0.1 将日历上所有事件视为忙碌，不区分 Graph showAs 空闲状态）
+- 修改日程 `update_event` — 已实现（仅 Outlook 后端；`scripts/update_event.py`）
+- 删除日程 `delete_event` — 已实现（仅 Outlook 后端；`scripts/delete_event.py`）
+- 事件搜索 `search_events` — 已实现（时间范围 + 关键词的确定性匹配；`scripts/search_events.py`）
 
-**暂不实现**：修改日程、删除日程、独立聊天程序、Web UI、App、React、LangChain、LangGraph、向量数据库、本地日程数据库、多 Agent、MCP Server、独立 LLM API、Whisper / 语音识别。
+**暂不实现**：修改 / 删除日程的批量操作、独立聊天程序、Web UI、App、React、LangChain、LangGraph、向量数据库、本地日程数据库、多 Agent、MCP Server、独立 LLM API、Whisper / 语音识别。
 
 未经用户明确要求，不要主动实现“暂不实现”清单中的功能。
 
@@ -59,6 +62,11 @@ python scripts/list_events.py --from 2026-09-10T09:00 --to 2026-09-10T18:00
 python scripts/list_events.py --json               # JSON 输出（便于程序读取）
 python scripts/create_event.py --title "和王总开会" --start 2026-09-14T15:00 --duration 60
 python scripts/find_free_time.py --from 2026-09-14T09:00 --to 2026-09-14T18:00 --duration 60
+python scripts/search_events.py --date 2026-09-14 --query 雅江
+python scripts/update_event.py --event-id <id> --start 2026-09-14T16:00 --duration 60          # 预览
+python scripts/update_event.py --event-id <id> --start 2026-09-14T16:00 --duration 60 --yes    # 执行
+python scripts/delete_event.py --event-id <id>          # 预览
+python scripts/delete_event.py --event-id <id> --yes    # 执行
 python -m unittest discover -s tests -v            # 运行测试
 ```
 
@@ -69,3 +77,19 @@ python -m unittest discover -s tests -v            # 运行测试
 当用户说“明天下午 3 点和王总开会一个小时”时：先换算成明确时间，必要时先查询该时段是否已有安排，然后调用 `scripts/create_event.py` 写入日历，并汇报创建结果（id、时间、标题）。
 
 当用户说“下周三下午帮我找一个小时空档”时：先换算时间范围，调用 `scripts/find_free_time.py`，把可选时段用自然语言汇报，让用户挑选。
+
+## 修改与删除日程的规则（安全机制）
+
+当用户说“把明天下午和壁仞的会议改到四点”或“取消周五那个客户会议”时，**不得直接操作**，必须走：
+
+1. 根据用户描述换算搜索时间范围（宁大勿小，如“明天下午”= 明天 12:00–18:00）
+2. 调用 `scripts/search_events.py` **实际读取日历**并按关键词过滤候选
+3. 没有匹配：明确告知没找到，不得构造 event id，也不得创建新事件顶替修改
+4. 多个候选：**列出候选让用户选择，禁止猜测**
+5. 唯一匹配：向用户展示目标（原日程 → 新日程 / 待删除日程）并确认
+6. 用户确认后：先跑**不带 --yes 的预览**看冲突提示，再带 `--yes` 执行
+7. 操作必须通过真实 event id；禁止仅凭标题删除或修改
+
+**冲突检查**：`update_event.py` 在时间变化时自动查询新时段的已有日程（排除自身 event id）并显示冲突；存在冲突时明确告知用户冲突事件，由用户决定是否仍加 `--yes` 继续。`create_event` 目前不做自动冲突检查，Codex 在创建前应先查询目标时段（发现冲突时提醒用户，是否创建由用户决定）。
+
+**重复日程**：遇到重复日程（instance / series master）时，修改和删除前必须向用户说明影响范围（“仅这一场”或“整个系列”），语义不明确时先让用户选择，不得因实现方便而擅自操作整个系列。脚本会对重复日程打印 ⚠️ 提示。

@@ -11,6 +11,7 @@ from __future__ import annotations
 import html
 import re
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 import requests
@@ -23,7 +24,8 @@ from src.outlook_auth import get_access_token
 GRAPH_BASE = GRAPH_BASE_URL
 TIMEOUT_SECONDS = 30
 
-_SELECT_FIELDS = "id,subject,start,end,isAllDay,location,body"
+_SELECT_FIELDS = "id,subject,start,end,isAllDay,location,body,seriesMasterId"
+_GET_FIELDS = "id,subject,start,end,isAllDay,location,body,seriesMasterId,recurrence"
 _FRACTION_RE = re.compile(r"\.\d+")
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 
@@ -142,6 +144,124 @@ class OutlookCalendarService:
             ) from exc
         return _to_event_dict(data)
 
+    def get_event(self, event_id: str) -> dict:
+        """按 id 读取单个事件（修改 / 删除前用于确认目标）。"""
+        if not event_id:
+            raise ValueError("event_id 不能为空")
+        try:
+            response = requests.get(
+                f"{GRAPH_BASE}/me/events/{quote(event_id, safe='')}",
+                params={"$select": _GET_FIELDS},
+                headers=_headers(),
+                timeout=TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise OutlookApiError(
+                f"请求 Microsoft Graph 读取日程失败（网络错误）: {exc}"
+            ) from exc
+        if response.status_code == 404:
+            raise OutlookApiError(f"事件不存在（id 无效或已被删除）: {event_id[:50]}")
+        if response.status_code != 200:
+            raise OutlookApiError(
+                f"读取日程失败（HTTP {response.status_code}）: {response.text[:500]}"
+            )
+        try:
+            return _to_event_dict(response.json())
+        except ValueError as exc:
+            raise OutlookApiError(
+                f"Microsoft Graph 返回了无法解析的响应: {response.text[:200]}"
+ ) from exc
+
+    def update_event(
+        self,
+        event_id: str,
+        title: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        location: str | None = None,
+        description: str | None = None,
+    ) -> dict:
+        """按 id 修改事件，仅提交显式提供的字段，返回更新后的事件字典。
+
+        - None（默认）表示该字段保持不变；location / description 传空字符串表示清空
+        - 同时提供 start/end 时校验相对关系；只改其一时与旧值的组合
+          由调用方（脚本层先 get_event）保证有效
+        - 重复日程：对实例 id 操作仅影响该场，对系列母事件 id 操作影响
+          整个系列；语义不明确时调用方（Codex）必须先询问用户
+        """
+        if not event_id:
+            raise ValueError("event_id 不能为空")
+
+        start_dt = ensure_aware(start) if start is not None else None
+        end_dt = ensure_aware(end) if end is not None else None
+        if start_dt is not None and end_dt is not None and end_dt <= start_dt:
+            raise ValueError(
+                f"结束时间必须晚于开始时间: {to_iso(start_dt)} -> {to_iso(end_dt)}"
+            )
+
+        patch: dict = {}
+        if title is not None:
+            if not title.strip():
+                raise ValueError("日程标题不能为空")
+            patch["subject"] = title.strip()
+        if start_dt is not None:
+            patch["start"] = _graph_datetime(start_dt, get_tz())
+        if end_dt is not None:
+            patch["end"] = _graph_datetime(end_dt, get_tz())
+        if location is not None:
+            patch["location"] = {"displayName": location}
+        if description is not None:
+            patch["body"] = {"contentType": "text", "content": description}
+        if not patch:
+            raise ValueError(
+                "至少提供一项要修改的字段（title/start/end/location/description）"
+            )
+
+        try:
+            response = requests.patch(
+                f"{GRAPH_BASE}/me/events/{quote(event_id, safe='')}",
+                json=patch,
+                headers=_headers(),
+                timeout=TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise OutlookApiError(
+                f"请求 Microsoft Graph 修改日程失败（网络错误）: {exc}"
+            ) from exc
+        if response.status_code == 404:
+            raise OutlookApiError(f"事件不存在（id 无效或已被删除）: {event_id[:50]}")
+        if response.status_code != 200:
+            raise OutlookApiError(
+                f"修改日程失败（HTTP {response.status_code}）: {response.text[:500]}"
+            )
+        try:
+            return _to_event_dict(response.json())
+        except ValueError as exc:
+            raise OutlookApiError(
+                f"Microsoft Graph 返回了无法解析的响应: {response.text[:200]}"
+            ) from exc
+
+    def delete_event(self, event_id: str) -> None:
+        """按 id 删除事件。调用方必须先 get_event 展示目标并经用户确认。"""
+        if not event_id:
+            raise ValueError("event_id 不能为空")
+        try:
+            response = requests.delete(
+                f"{GRAPH_BASE}/me/events/{quote(event_id, safe='')}",
+                headers=_headers(),
+                timeout=TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise OutlookApiError(
+                f"请求 Microsoft Graph 删除日程失败（网络错误）: {exc}"
+            ) from exc
+        if response.status_code == 404:
+            raise OutlookApiError(f"事件不存在（id 无效或已被删除）: {event_id[:50]}")
+        if response.status_code != 204:
+            raise OutlookApiError(
+                f"删除日程失败（HTTP {response.status_code}）: {response.text[:500]}"
+            )
+
     def find_free_time(self, start: datetime, end: datetime,
                        duration_minutes: int) -> list[tuple[datetime, datetime]]:
         """在 [start, end) 内返回所有 ≥ duration_minutes 的空闲区间。
@@ -182,6 +302,8 @@ def _to_event_dict(item: dict) -> dict:
         "all_day": bool(item.get("isAllDay", False)),
         "location": location,
         "description": _strip_html(body) if body else None,
+        "series_master_id": item.get("seriesMasterId"),
+        "is_series_master": bool(item.get("recurrence")),
     }
 
 

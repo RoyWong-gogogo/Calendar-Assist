@@ -78,6 +78,27 @@ class IcsCalendarService:
         busy = self.list_events(start, end)
         return find_free_slots(busy, start, end, timedelta(minutes=duration_minutes))
 
+    def get_event(self, *args, **kwargs) -> dict:
+        """ICS 订阅是只读数据源，不支持按 id 读取单个日程。"""
+        raise IcsError(
+            "ICS 订阅后端只读，不支持按 id 读取日程。"
+            "请使用 Outlook 后端（.env 设置 CALENDAR_PROVIDER=outlook）。"
+        )
+
+    def update_event(self, *args, **kwargs) -> dict:
+        """ICS 订阅是只读数据源，不支持修改日程。"""
+        raise IcsError(
+            "ICS 订阅后端只读，不支持修改日程。"
+            "请使用 Outlook 后端（.env 设置 CALENDAR_PROVIDER=outlook）。"
+        )
+
+    def delete_event(self, *args, **kwargs) -> None:
+        """ICS 订阅是只读数据源，不支持删除日程。"""
+        raise IcsError(
+            "ICS 订阅后端只读，不支持删除日程。"
+            "请使用 Outlook 后端（.env 设置 CALENDAR_PROVIDER=outlook）。"
+        )
+
     def _fetch(self) -> str:
         try:
             response = requests.get(
