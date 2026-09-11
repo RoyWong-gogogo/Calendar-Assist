@@ -19,6 +19,7 @@ from icalendar import Calendar
 
 from src.config import ICS_URL
 from src.datetime_utils import ensure_aware, get_tz, to_iso
+from src.free_time import find_free_slots
 
 TIMEOUT_SECONDS = 30
 
@@ -60,6 +61,22 @@ class IcsCalendarService:
 
         ics_text = self._fetch()
         return self._parse(ics_text, start, end)
+
+    def create_event(self, *args, **kwargs) -> dict:
+        """ICS 订阅是只读数据源，不支持创建日程。"""
+        raise IcsError(
+            "ICS 订阅后端只读，不支持创建日程。"
+            "请使用 Outlook 后端（.env 设置 CALENDAR_PROVIDER=outlook）。"
+        )
+
+    def find_free_time(self, start: datetime, end: datetime,
+                       duration_minutes: int) -> list[tuple[datetime, datetime]]:
+        """在 [start, end) 内返回所有 ≥ duration_minutes 的空闲区间。
+
+        注意：基于发布快照计算，非实时数据。
+        """
+        busy = self.list_events(start, end)
+        return find_free_slots(busy, start, end, timedelta(minutes=duration_minutes))
 
     def _fetch(self) -> str:
         try:

@@ -9,13 +9,14 @@ Graph 端点由 OUTLOOK_CLOUD 控制（china 默认 / global），见 src/config
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import requests
 
 from src.config import CALENDAR_TIMEZONE, GRAPH_BASE_URL
 from src.datetime_utils import ensure_aware, get_tz, to_iso
+from src.free_time import find_free_slots
 from src.outlook_auth import get_access_token
 
 GRAPH_BASE = GRAPH_BASE_URL
@@ -90,6 +91,66 @@ class OutlookCalendarService:
         )
         return events
 
+    def create_event(self, title: str, start: datetime, end: datetime,
+                     location: str | None = None,
+                     description: str | None = None) -> dict:
+        """在默认（主）日历上创建日程，返回与 list_events 一致的事件字典。
+
+        title / start / end 必填；location / description 可选。
+        """
+        if not title or not title.strip():
+            raise ValueError("日程标题不能为空")
+        start = ensure_aware(start)
+        end = ensure_aware(end)
+        if end <= start:
+            raise ValueError(
+                f"结束时间必须晚于开始时间: {to_iso(start)} -> {to_iso(end)}"
+            )
+
+        tz = get_tz()
+        body = {
+            "subject": title.strip(),
+            "start": _graph_datetime(start, tz),
+            "end": _graph_datetime(end, tz),
+        }
+        if location:
+            body["location"] = {"displayName": location}
+        if description:
+            body["body"] = {"contentType": "text", "content": description}
+
+        try:
+            response = requests.post(
+                f"{GRAPH_BASE}/me/events",
+                json=body,
+                headers=_headers(),
+                timeout=TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise OutlookApiError(
+                f"请求 Microsoft Graph 创建日程失败（网络错误）: {exc}"
+            ) from exc
+        if response.status_code != 201:
+            raise OutlookApiError(
+                f"创建日程失败（HTTP {response.status_code}）: {response.text[:500]}"
+            )
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise OutlookApiError(
+                f"Microsoft Graph 返回了无法解析的响应: {response.text[:200]}"
+            ) from exc
+        return _to_event_dict(data)
+
+    def find_free_time(self, start: datetime, end: datetime,
+                       duration_minutes: int) -> list[tuple[datetime, datetime]]:
+        """在 [start, end) 内返回所有 ≥ duration_minutes 的空闲区间。
+
+        v0.1 简化：日历上的所有事件都视为忙碌
+        （不区分 Graph 的 showAs 空闲状态标记）。
+        """
+        busy = self.list_events(start, end)
+        return find_free_slots(busy, start, end, timedelta(minutes=duration_minutes))
+
 
 def _headers() -> dict:
     return {
@@ -97,6 +158,14 @@ def _headers() -> dict:
         # 让 Graph 把时间换算成配置时区返回；即使服务端忽略此偏好，
         # parse_graph_datetime 也能正确处理带偏移的返回值
         "Prefer": f'outlook.timezone="{CALENDAR_TIMEZONE}"',
+    }
+
+
+def _graph_datetime(dt: datetime, tz) -> dict:
+    """把 aware datetime 格式化为 Graph 需要的 {dateTime, timeZone} 结构。"""
+    return {
+        "dateTime": dt.astimezone(tz).strftime("%Y-%m-%dT%H:%M:%S"),
+        "timeZone": CALENDAR_TIMEZONE,
     }
 
 

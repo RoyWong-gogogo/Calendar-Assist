@@ -1,18 +1,20 @@
 """Google Calendar API 的薄封装。
 
-v0.1 只实现 list_events；create_event / find_free_time 在后续 Session 加入。
-OAuth 细节独立在 src/google_auth.py，本模块只关心日历业务。
+当前不可用（Google 登录无法完成，仅保留代码）。list_events 完整实现；
+create_event 抛出 NotImplementedError；find_free_time 基于查询结果计算。
+OAuth 细节独立在 src/google_auth.py。
 """
 
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from src.config import GOOGLE_CALENDAR_ID
 from src.datetime_utils import ensure_aware, get_tz, to_iso
+from src.free_time import find_free_slots
 from src.google_auth import get_credentials
 
 
@@ -69,6 +71,19 @@ class CalendarService:
             ) from exc
 
         return [_to_event_dict(item) for item in items]
+
+    def create_event(self, *args, **kwargs) -> dict:
+        """Google 后端当前不可用，不支持创建日程。"""
+        raise NotImplementedError(
+            "Google 后端当前不可用（Google 登录未打通），create_event 未实现。"
+            "当前主后端为 Outlook（CALENDAR_PROVIDER=outlook）。"
+        )
+
+    def find_free_time(self, start: datetime, end: datetime,
+                       duration_minutes: int) -> list[tuple[datetime, datetime]]:
+        """在 [start, end) 内返回所有 ≥ duration_minutes 的空闲区间。"""
+        busy = self.list_events(start, end)
+        return find_free_slots(busy, start, end, timedelta(minutes=duration_minutes))
 
 
 def _to_event_dict(item: dict) -> dict:

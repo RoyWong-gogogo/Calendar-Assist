@@ -11,10 +11,10 @@
 | 能力 | 状态 |
 | --- | --- |
 | 查询日程 `list_events` | 已实现（ICS / Outlook / Google 多后端） |
-| 创建日程 `create_event` | 计划 Session 2 |
-| 查询空闲时间 `find_free_time` | 计划 Session 2 |
+| 创建日程 `create_event` | 已实现（Outlook 后端；ICS 只读 / Google 不可用，调用会明确报错） |
+| 查询空闲时间 `find_free_time` | 已实现（全部后端；v0.1 将日历上所有事件视为忙碌） |
 
-修改、删除日程暂不支持。
+修改、删除日程暂不支持；测试创建的日程需要在 Outlook 网页版手动删除。
 
 ## 环境要求
 
@@ -45,7 +45,7 @@ py -3.14 -m venv .venv
 
 ### 限制（重要）
 
-- **只读**：可以查询日程（Session 2 的空闲时间也基于查询结果计算），但**无法创建 / 修改 / 删除日程**。`create_event` 需要写权限路径（见开发计划）。
+- **只读**：可以查询日程和计算空闲时间，但**无法创建 / 修改 / 删除日程**。需要写入时切换 Outlook 后端（`CALENDAR_PROVIDER=outlook`）。
 - **非实时**：发布的是快照，日程改动通常延迟若干分钟甚至更久才会反映到链接里。
 - **链接即凭证**：任何拿到 ICS 链接的人都能查看日历内容，只保存在 `.env`，不要提交 Git、不要发给他人。
 - 发布内容的详细程度（是否包含标题 / 地点 / 备注）由发布选项决定；如果组织策略禁用发布，Publish 按钮会不可用。
@@ -152,6 +152,13 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 ./.venv/Scripts/python.exe scripts/list_events.py --date 2026-09-12   # 指定日期
 ./.venv/Scripts/python.exe scripts/list_events.py --from 2026-09-10T09:00 --to 2026-09-10T18:00
 ./.venv/Scripts/python.exe scripts/list_events.py --json              # JSON 输出
+
+# 创建日程（--end 与 --duration 二选一）
+./.venv/Scripts/python.exe scripts/create_event.py --title "和王总开会" --start 2026-09-14T15:00 --duration 60
+./.venv/Scripts/python.exe scripts/create_event.py --title "方案评审" --start 2026-09-15T14:00 --end 2026-09-15T15:30 --location "会议室 A" --description "评审 v2 方案"
+
+# 查找空闲时间（返回所有可容纳该时长的连续区间）
+./.venv/Scripts/python.exe scripts/find_free_time.py --from 2026-09-14T09:00 --to 2026-09-14T18:00 --duration 60
 ```
 
 ## 配置
@@ -162,7 +169,7 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 | --- | --- | --- |
 | `CALENDAR_PROVIDER` | `outlook` | 日历后端：`outlook` / `ics` / `google` |
 | `OUTLOOK_CLOUD` | `china` | 微软云：`china`（世纪互联）/ `global`（全球） |
-| `ICS_URL` | （空） | Outlook「发布日历」生成的 ICS 订阅链接（当前后端必填；机密，等同凭证） |
+| `ICS_URL` | （空） | Outlook「发布日历」生成的 ICS 订阅链接（仅 provider=ics 时必填；机密，等同凭证） |
 | `CALENDAR_TIMEZONE` | `Asia/Shanghai` | 解析日期时间的默认时区（IANA 名称） |
 | `OUTLOOK_CLIENT_ID` | （空） | Azure App registration 的 Application (client) ID |
 | `OUTLOOK_TENANT_ID` | `organizations` | App registration Overview 页的 Directory (tenant) ID；留空使用 `organizations` |
@@ -187,15 +194,22 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 │   ├── service_factory.py    # 按 CALENDAR_PROVIDER 选择后端
 │   ├── ics_service.py        # ICS 订阅后端（只读后备）
 │   ├── outlook_auth.py       # Microsoft OAuth（MSAL 设备码流，中国区）
-│   ├── outlook_service.py    # Microsoft Graph 日历封装（中国区）
+│   ├── outlook_service.py    # Microsoft Graph 日历封装（中国区，读+写）
+│   ├── free_time.py          # 空闲时间纯算法（后端无关）
 │   ├── google_auth.py        # Google OAuth（过渡期保留）
 │   ├── calendar_service.py   # Google Calendar 封装（过渡期保留）
 │   └── datetime_utils.py     # timezone-aware 日期时间工具
 ├── scripts/
-│   └── list_events.py        # 查询日程
+│   ├── list_events.py        # 查询日程
+│   ├── create_event.py       # 创建日程
+│   ├── find_free_time.py     # 查找空闲时间
+│   └── register_outlook_app.py # 应用注册引导（门户被租户限制时的一次性工具）
 └── tests/
     ├── test_datetime_utils.py
+    ├── test_free_time.py
+    ├── test_create_event.py
     ├── test_ics_parsing.py
+    ├── test_outlook_cloud.py
     └── test_outlook_parsing.py
 ```
 
@@ -209,8 +223,6 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 
 ## 开发计划
 
-- Session 1：项目骨架 + Google OAuth + `list_events`（已完成）
-- 切换：Outlook Calendar 接入（已完成；后发现工作邮箱为世纪互联版，全球 OAuth 端点不可用）
-- 当前：Outlook 中国区 Graph OAuth 接入（进行中）；ICS 只读后备已就绪
-- Session 2：`create_event` + `find_free_time`（基于中国区 Graph 读写）
-- 之后：验证稳定后清理不可用后端；按需评估修改、删除日程
+- Session 1：项目骨架 + OAuth + `list_events`（已完成；历经 Google → Outlook 全球端点 → 世纪互联中国区端点的摸索，最终落在中国区 Graph）
+- Session 2：`create_event` + `find_free_time`（已完成，基于中国区 Graph 读写）
+- 之后候选：`create_event` 支持与会人（自动发会议邀请）、修改 / 删除日程、`find_free_time` 区分 showAs 空闲状态、清理 Google / ICS 备用后端

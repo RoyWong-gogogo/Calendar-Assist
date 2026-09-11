@@ -29,15 +29,15 @@ Google 实现（`src/google_auth.py` / `src/calendar_service.py`，`CALENDAR_PRO
 
 ## 当前功能范围
 
-v0.1 只计划支持以下三个能力：
+v0.1 的三个核心能力（均已实现）：
 
 - 查询日程 `list_events` — 已实现（ICS / Outlook / Google 多后端）
-- 创建日程 `create_event` — 计划中（Session 2）
-- 查询空闲时间 `find_free_time` — 计划中（Session 2）
+- 创建日程 `create_event` — 已实现（仅 Outlook 后端；ICS 只读 / Google 不可用，调用会明确报错）
+- 查询空闲时间 `find_free_time` — 已实现（全部后端；v0.1 将日历上所有事件视为忙碌，不区分 Graph showAs 空闲状态）
 
 **暂不实现**：修改日程、删除日程、独立聊天程序、Web UI、App、React、LangChain、LangGraph、向量数据库、本地日程数据库、多 Agent、MCP Server、独立 LLM API、Whisper / 语音识别。
 
-未经用户明确要求，不要主动实现“暂不实现”清单中的功能，也不要提前实现“计划中”的功能。
+未经用户明确要求，不要主动实现“暂不实现”清单中的功能。
 
 ## 安全
 
@@ -57,9 +57,15 @@ python scripts/list_events.py                      # 查询今天
 python scripts/list_events.py --date 2026-09-10    # 查询指定日期
 python scripts/list_events.py --from 2026-09-10T09:00 --to 2026-09-10T18:00
 python scripts/list_events.py --json               # JSON 输出（便于程序读取）
+python scripts/create_event.py --title "和王总开会" --start 2026-09-14T15:00 --duration 60
+python scripts/find_free_time.py --from 2026-09-14T09:00 --to 2026-09-14T18:00 --duration 60
 python -m unittest discover -s tests -v            # 运行测试
 ```
 
 ## 工作方式
 
 当用户说“我明天下午有什么安排”时：先把“明天下午”换算成准确的时间范围，然后调用 `scripts/list_events.py`（或 `service_factory.get_calendar_service_class()`）实际读取日历，最后用简洁的自然语言汇报结果。禁止凭上下文猜测日历内容。
+
+当用户说“明天下午 3 点和王总开会一个小时”时：先换算成明确时间，必要时先查询该时段是否已有安排，然后调用 `scripts/create_event.py` 写入日历，并汇报创建结果（id、时间、标题）。
+
+当用户说“下周三下午帮我找一个小时空档”时：先换算时间范围，调用 `scripts/find_free_time.py`，把可选时段用自然语言汇报，让用户挑选。
