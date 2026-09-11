@@ -8,24 +8,24 @@ calendar-agent 是一个轻量级的个人日程助手。**Codex 对话窗口本
 
 ## 日历后端
 
-当前默认后端是 **ICS 订阅链接**（Outlook 网页版「发布日历」生成的 ICS 链接，只读，无需 OAuth 与应用注册；`src/ics_service.py`）。
+当前主后端是 **Outlook Calendar（中国区 Microsoft Graph OAuth）**：工作邮箱是世纪互联运营的 Microsoft 365（partner.outlook.cn），必须走中国区端点——门户 portal.azure.cn、登录 login.partner.microsoftonline.cn、API microsoftgraph.chinacloudapi.cn。端点由 `.env` 的 `OUTLOOK_CLOUD=china` 控制（`src/config.py` 内置 china / global 两套映射），`CALENDAR_PROVIDER=outlook`。
 
-背景：用户的工作邮箱是**世纪互联运营的 Microsoft 365**（partner.outlook.cn），与全球 Azure / Microsoft 账号体系隔离，全球 OAuth 端点（login.microsoftonline.com / graph.microsoft.com）无法认证该账号，因此 Outlook OAuth 后端（`src/outlook_auth.py` / `src/outlook_service.py`）暂不可用，代码保留；Google 实现同样仅保留。
+ICS 订阅链接后端（`src/ics_service.py`，`CALENDAR_PROVIDER=ics`）作为**只读后备**：无需 OAuth，但只能查询；数据是发布快照（非实时，有延迟）；`ICS_URL` 是机密凭证（等同密码，只放 `.env`）。
 
-ICS 后端的限制：**只读**（不支持创建 / 修改 / 删除日程）；数据是发布快照（非实时，有延迟）；`ICS_URL` 是机密凭证（等同密码，只放 `.env`）。
+Google 实现（`src/google_auth.py` / `src/calendar_service.py`，`CALENDAR_PROVIDER=google`）仅保留代码，全球 OAuth 无法登录，暂不可用。
 
-后端由 `src/config.py` 的 `CALENDAR_PROVIDER` 控制（默认 `ics`，可选 `outlook` / `google`），通过 `src/service_factory.py` 选择具体实现；各后端的 `list_events` 返回结构完全一致。
+后端由 `src/config.py` 的 `CALENDAR_PROVIDER` 控制，通过 `src/service_factory.py` 选择具体实现；各后端的 `list_events` 返回结构完全一致。
 
 ## 不可违反的原则
 
-1. **当前配置的日历服务（默认 ICS 订阅）是唯一日程事实源。** 任何涉及“现在有什么日程”“某段时间是否有空”的回答，都必须实际调用日历 API 读取数据，禁止凭聊天记录、上下文或记忆猜测日程。
+1. **当前配置的日历服务（默认 Outlook 中国区 Graph）是唯一日程事实源。** 任何涉及“现在有什么日程”“某段时间是否有空”的回答，都必须实际调用日历 API 读取数据，禁止凭聊天记录、上下文或记忆猜测日程。
 2. **不要在没有验证日历 API 返回结果的情况下，声称某个日程存在或不存在。** 结论必须基于 API 实际返回的数据。
 3. **所有 datetime 必须 timezone-aware。** 禁止用 naive datetime 调用日历 API。默认时区只在 `src/config.py` 定义一处（初始值 `Asia/Shanghai`），不要在其他文件硬编码时区。内部时间统一使用 ISO 8601。
 4. **相对日期（今天 / 明天 / 后天 / 本周五 / 下周三 / 上午 / 下午 / 晚上）**由 Codex 先基于当前本地日期和配置时区换算成明确时间，再调用工具。项目内不需要也不应该引入自然语言解析器或额外的 LLM 调用。
 5. **不要引入复杂框架。** 不使用 LangChain、LangGraph、向量数据库、本地日程数据库、多 Agent、MCP Server、独立 LLM API、语音识别。技术栈保持为 Python + 日历 API + 标准库 + 少量必要第三方依赖。
 6. **代码优先简单、可读、易调试、易扩展。** 避免过度封装，不为“架构完整”增加当前阶段不需要的层。
 7. **所有日历 API 错误都要给出明确异常信息，不要吞掉错误。**
-8. **Outlook OAuth（该后端暂未启用）默认使用设备代码流**：首次授权需要用户在浏览器打开 https://microsoft.com/devicelogin 并输入一次性代码。Codex 运行授权相关命令时，必须把代码和操作步骤清楚转达给用户，并等用户完成后再继续；不要在用户未完成授权时反复重试。
+8. **Outlook OAuth 使用设备代码流**：首次授权需要用户在浏览器打开 https://microsoft.com/devicelogin 并输入一次性代码。Codex 运行授权相关命令时，必须把代码和操作步骤清楚转达给用户，并等用户完成后再继续；不要在用户未完成授权时反复重试。
 
 ## 当前功能范围
 

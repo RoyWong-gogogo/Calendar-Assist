@@ -3,6 +3,7 @@
 与 src/calendar_service.py（Google 实现）保持一致的 list_events 返回结构，
 由 src/service_factory.py 按 CALENDAR_PROVIDER 选择实现。
 OAuth 细节独立在 src/outlook_auth.py。
+Graph 端点由 OUTLOOK_CLOUD 控制（china 默认 / global），见 src/config.py。
 """
 
 from __future__ import annotations
@@ -13,11 +14,11 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-from src.config import CALENDAR_TIMEZONE
+from src.config import CALENDAR_TIMEZONE, GRAPH_BASE_URL
 from src.datetime_utils import ensure_aware, get_tz, to_iso
 from src.outlook_auth import get_access_token
 
-GRAPH_BASE = "https://graph.microsoft.com/v1.0"
+GRAPH_BASE = GRAPH_BASE_URL
 TIMEOUT_SECONDS = 30
 
 _SELECT_FIELDS = "id,subject,start,end,isAllDay,location,body"

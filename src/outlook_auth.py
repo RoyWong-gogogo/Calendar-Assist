@@ -6,6 +6,8 @@
 - 可通过 OUTLOOK_AUTH_FLOW=interactive 切换为交互式浏览器流程（需要在
   Azure 应用中额外添加平台并配置 http://localhost 重定向 URI）。
 - token 缓存在 credentials/outlook_token.bin，过期自动静默刷新。
+- 端点（登录 / Graph / 权限范围）由 OUTLOOK_CLOUD 控制（china 默认 / global），
+  见 src/config.py。
 """
 
 from __future__ import annotations
@@ -13,17 +15,19 @@ from __future__ import annotations
 import msal
 
 from src.config import (
+    OUTLOOK_AUTHORITY_HOST,
     OUTLOOK_AUTH_FLOW,
     OUTLOOK_CLIENT_ID,
+    OUTLOOK_SCOPES,
     OUTLOOK_TENANT_ID,
     OUTLOOK_TOKEN_FILE,
 )
 
 # 日程读写范围。list_events 只需要读，但 Session 2 会实现 create_event，
 # 直接申请读写范围可以避免届时要求用户重新授权。
-SCOPES = ["https://graph.microsoft.com/Calendars.ReadWrite"]
+SCOPES = OUTLOOK_SCOPES
 
-AUTHORITY = f"https://login.microsoftonline.com/{OUTLOOK_TENANT_ID}"
+AUTHORITY = f"https://{OUTLOOK_AUTHORITY_HOST}/{OUTLOOK_TENANT_ID}"
 
 _app: msal.PublicClientApplication | None = None
 
@@ -65,7 +69,8 @@ def get_access_token() -> str:
             "（App registrations → Authentication → Allow public client flows → Yes）\n"
             "  - 组织要求管理员同意: 需要 IT 管理员在 API permissions 页点击"
             " Grant admin consent\n"
-            "  - OUTLOOK_CLIENT_ID / OUTLOOK_TENANT_ID 填写不正确"
+            "  - OUTLOOK_CLIENT_ID / OUTLOOK_TENANT_ID / OUTLOOK_CLOUD 填写不正确"
+            "（世纪互联账号须为 china）"
         )
     return result["access_token"]
 
@@ -76,15 +81,13 @@ def _get_app() -> msal.PublicClientApplication:
         if not OUTLOOK_CLIENT_ID:
             raise AuthError(
                 "未配置 OUTLOOK_CLIENT_ID。\n"
-                "请先完成 Azure 应用注册（详见 README.md 的 Outlook Calendar 接入一节）:\n"
-                "  1. 打开 https://portal.azure.com/ → Microsoft Entra ID →"
-                " App registrations → New registration\n"
-                "  2. 受支持的帐户类型选 Accounts in this organizational directory only"
-                "（单租户），注册\n"
-                "  3. 复制 Application (client) ID 和 Directory (tenant) ID\n"
+                "请先在 Azure 中国门户注册应用（详见 README「Outlook Calendar」一节）:\n"
+                "  1. 用工作账号登录 https://portal.azure.cn/（无需 Azure 订阅）\n"
+                "  2. 搜索「应用注册」→ New registration（单租户，Redirect URI 留空）\n"
+                "  3. 复制 Application (client) ID 和 Directory (tenant) ID 填入 .env\n"
                 "  4. Authentication → Allow public client flows → Yes\n"
                 "  5. API permissions → 添加 Microsoft Graph 委托权限 Calendars.ReadWrite\n"
-                "  6. 在项目根目录 .env 写入 OUTLOOK_CLIENT_ID=... 和 OUTLOOK_TENANT_ID=..."
+                "  6. 确认 .env 中 OUTLOOK_CLOUD=china、CALENDAR_PROVIDER=outlook"
             )
         cache = msal.SerializableTokenCache()
         if OUTLOOK_TOKEN_FILE.exists():

@@ -1,7 +1,7 @@
 """按 CALENDAR_PROVIDER 返回日历服务实现。
 
-当前默认 ics（只读订阅）；outlook（世纪互联工作账号暂不可用）与
-google（过渡期保留）作为备选后端。
+默认 outlook（中国区 Microsoft Graph，端点由 OUTLOOK_CLOUD 控制）；
+ics（只读订阅后备）与 google（过渡期保留）为备选后端。
 """
 
 from __future__ import annotations

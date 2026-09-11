@@ -39,10 +39,10 @@ def _resolve_path(env_key: str, default: Path) -> Path:
 CALENDAR_TIMEZONE: str = os.environ.get("CALENDAR_TIMEZONE", "Asia/Shanghai")
 
 # ---- 日历服务提供方 ----
-# ics（默认，只读订阅）/ outlook（暂不可用，见下）/ google（过渡期保留）
-CALENDAR_PROVIDER: str = os.environ.get("CALENDAR_PROVIDER") or "ics"
+# outlook（默认，中国区 Graph）/ ics（只读订阅后备）/ google（过渡期保留）
+CALENDAR_PROVIDER: str = os.environ.get("CALENDAR_PROVIDER") or "outlook"
 
-# ---- ICS 订阅（当前默认后端）----
+# ---- ICS 订阅（只读后备）----
 # Outlook 网页版「发布日历」生成的 ICS 订阅链接（只读）。
 # 注意：链接本身是机密，任何拿到的人都能查看日历，只应保存在 .env。
 ICS_URL: str = os.environ.get("ICS_URL") or ""
@@ -63,6 +63,38 @@ OUTLOOK_AUTH_FLOW: str = os.environ.get("OUTLOOK_AUTH_FLOW") or "device"
 OUTLOOK_TOKEN_FILE: Path = _resolve_path(
     "OUTLOOK_TOKEN_FILE", PROJECT_ROOT / "credentials" / "outlook_token.bin"
 )
+
+# 微软云: china（世纪互联运营，默认）| global（全球版）。
+# 登录 / Graph API / 权限范围端点成套映射，避免散落硬编码。
+OUTLOOK_CLOUD: str = (os.environ.get("OUTLOOK_CLOUD") or "china").strip().lower()
+
+_OUTLOOK_CLOUDS: dict = {
+    "china": {
+        "authority_host": "login.partner.microsoftonline.cn",
+        "graph_base": "https://microsoftgraph.chinacloudapi.cn/v1.0",
+        "scopes": ["https://microsoftgraph.chinacloudapi.cn/Calendars.ReadWrite"],
+    },
+    "global": {
+        "authority_host": "login.microsoftonline.com",
+        "graph_base": "https://graph.microsoft.com/v1.0",
+        "scopes": ["https://graph.microsoft.com/Calendars.ReadWrite"],
+    },
+}
+
+
+def _outlook_cloud_config() -> dict:
+    try:
+        return _OUTLOOK_CLOUDS[OUTLOOK_CLOUD]
+    except KeyError:
+        raise ValueError(
+            f"未知的 OUTLOOK_CLOUD={OUTLOOK_CLOUD!r}，当前支持: china / global"
+        ) from None
+
+
+# 供 outlook_auth / outlook_service 使用的云端点（定义一次，集中管理）
+OUTLOOK_AUTHORITY_HOST: str = _outlook_cloud_config()["authority_host"]
+GRAPH_BASE_URL: str = _outlook_cloud_config()["graph_base"]
+OUTLOOK_SCOPES: list[str] = _outlook_cloud_config()["scopes"]
 
 # 要操作的 Google 日历 ID，"primary" 即用户主日历。
 GOOGLE_CALENDAR_ID: str = os.environ.get("GOOGLE_CALENDAR_ID", "primary")

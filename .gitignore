@@ -8,6 +8,7 @@ credentials/*
 # venv bootstrap 临时目录（沙箱环境产物，可安全删除）
 .tmp-bootstrap/
 .tmp-pip/
+.tmp-ocr/
 
 # Python
 __pycache__/

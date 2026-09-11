@@ -2,7 +2,7 @@
 
 轻量级个人日程助手。**Codex 对话窗口就是交互入口**：直接用自然语言问日程、约会议、找空档，Codex 调用本项目中的工具读写日历，并把结果告诉你。
 
-**当前默认通过 ICS 订阅链接只读访问 Outlook 工作日历**（Outlook 网页版「发布日历」功能）。Google 实现过渡期保留，可通过 `CALENDAR_PROVIDER=google` 切换。
+**当前主后端为 Outlook Calendar（中国区 Microsoft Graph OAuth，世纪互联租户）**；ICS 订阅链接作为只读后备。Google 实现过渡期保留，可通过 `CALENDAR_PROVIDER=google` 切换。
 
 **配置的日历服务是唯一日程事实源** —— 所有日程查询都实际读取日历 API，不依赖聊天记录。
 
@@ -20,7 +20,7 @@
 
 - Windows + PowerShell
 - Python 3.11+（开发环境为 3.14）
-- 一个能登录 Outlook 网页版的工作账号（用于生成 ICS 订阅链接）
+- 一个能登录 Azure 中国门户（portal.azure.cn）的工作账号（用于注册应用）
 
 ## 安装
 
@@ -29,11 +29,11 @@ py -3.14 -m venv .venv
 ./.venv/Scripts/python.exe -m pip install -r requirements.txt
 ```
 
-## ICS 订阅（当前默认后端）
+## ICS 订阅（只读后备）
 
-当前通过 **Outlook 网页版「发布日历」生成的 ICS 订阅链接**只读访问工作日历。无需 OAuth、无需应用注册、无需任何额外账号。
+后备方案（`CALENDAR_PROVIDER=ics`）：通过 **Outlook 网页版「发布日历」生成的 ICS 订阅链接**只读访问工作日历。无需 OAuth、无需应用注册、无需任何额外账号。
 
-背景：工作邮箱是**世纪互联运营的 Microsoft 365**（`partner.outlook.cn`），它与全球版 Azure / Microsoft 账号体系完全隔离——这正是之前 Azure 门户登录接连报错（AADSTS500011 等）的原因：世纪互联的工作账号在全球门户里根本不存在，全球 OAuth 端点（`login.microsoftonline.com` / `graph.microsoft.com`）也无法认证该账号，因此 Outlook OAuth 后端暂时不可用（见下文）。
+背景：工作邮箱是**世纪互联运营的 Microsoft 365**（`partner.outlook.cn`），它与全球版 Azure / Microsoft 账号体系完全隔离——这正是之前 Azure 门户登录接连报错（AADSTS500011 等）的原因：世纪互联的工作账号在全球门户里根本不存在，全球 OAuth 端点（`login.microsoftonline.com` / `graph.microsoft.com`）也无法认证该账号。正确路径是中国区门户 portal.azure.cn 与中国区端点（见下文 Outlook Calendar 一节）。
 
 ### 配置步骤
 
@@ -50,9 +50,33 @@ py -3.14 -m venv .venv
 - **链接即凭证**：任何拿到 ICS 链接的人都能查看日历内容，只保存在 `.env`，不要提交 Git、不要发给他人。
 - 发布内容的详细程度（是否包含标题 / 地点 / 备注）由发布选项决定；如果组织策略禁用发布，Publish 按钮会不可用。
 
-## Outlook OAuth（暂不可用，代码保留）
+## Outlook Calendar（当前主后端，中国区 Graph OAuth）
 
-`src/outlook_auth.py` / `src/outlook_service.py` 实现了完整的 Microsoft Graph OAuth 路径（MSAL 设备码流 + Graph API），但当前指向**全球端点**，无法认证世纪互联运营的工作账号。若将来要启用，需要在中国区端点（`login.partner.microsoftonline.cn` / `microsoftgraph.chinacloudapi.cn`）注册应用并授权，并把 `src/outlook_auth.py` 的 `AUTHORITY`、`src/outlook_service.py` 的 `GRAPH_BASE` 两处常量改为中国区地址。以下原始说明保留供参考。
+`src/outlook_auth.py` / `src/outlook_service.py` 实现完整的 Microsoft Graph OAuth 路径（MSAL 设备码流 + Graph API）。工作邮箱是**世纪互联运营的 Microsoft 365**，必须走中国区端点——门户 portal.azure.cn、登录 `login.partner.microsoftonline.cn`、API `microsoftgraph.chinacloudapi.cn`；由 `.env` 的 `OUTLOOK_CLOUD=china` 控制（`global` 为全球版），代码无需修改。
+
+### 第 1 步：在 Azure 中国门户注册应用（一次性）
+
+用工作账号登录 <https://portal.azure.cn/>（无订阅不影响，应用注册不需要订阅）：
+
+1. 顶部搜索 **应用注册 (App registrations)**（或首页 "Manage Microsoft Entra ID" 卡片 → View → 左侧 Applications → App registrations）。
+2. **New registration**：Name 填 `calendar-agent`；Supported account types 选 **Accounts in this organizational directory only（单租户）**；Redirect URI 留空（设备代码流不需要），注册。
+3. Overview 页复制两个值填入 `.env`：**Application (client) ID** → `OUTLOOK_CLIENT_ID`；**Directory (tenant) ID** → `OUTLOOK_TENANT_ID`。
+4. 左侧 **Authentication** → 底部 **Allow public client flows** → **Yes** → Save（设备代码流必需，否则报 AADSTS7000218）。
+5. 左侧 **API permissions** → Add a permission → **Microsoft Graph** → **Delegated permissions** → 勾选 **Calendars.ReadWrite** → Add permissions。若授权时提示需管理员批准，请管理员在该页点 **Grant admin consent**。
+
+### 第 2 步：首次授权并验证
+
+```powershell
+./.venv/Scripts/python.exe scripts/list_events.py
+```
+
+默认**设备代码流**：脚本打印链接和一次性代码，在浏览器打开 https://microsoft.com/devicelogin 输入代码，用工作账号登录并同意。成功后 token 缓存到 `credentials/outlook_token.bin`，自动刷新。
+
+> 权限申请的是委托权限 `Calendars.ReadWrite`（读写）。当前只用到读取，但为 Session 2 的 `create_event` 不需要重新授权，直接申请了读写范围。
+
+### 全球版端点（参考）
+
+`OUTLOOK_CLOUD=global` 切回全球端点（login.microsoftonline.com / graph.microsoft.com），适用于全球版 Microsoft 365 账号。以下为此前的全球版注册说明，保留供参考。
 
 ### 第 1 步：注册 Azure 应用（一次性，人工步骤）
 
@@ -134,11 +158,12 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `CALENDAR_PROVIDER` | `ics` | 日历后端：`ics` / `outlook` / `google` |
+| `CALENDAR_PROVIDER` | `outlook` | 日历后端：`outlook` / `ics` / `google` |
+| `OUTLOOK_CLOUD` | `china` | 微软云：`china`（世纪互联）/ `global`（全球） |
 | `ICS_URL` | （空） | Outlook「发布日历」生成的 ICS 订阅链接（当前后端必填；机密，等同凭证） |
 | `CALENDAR_TIMEZONE` | `Asia/Shanghai` | 解析日期时间的默认时区（IANA 名称） |
 | `OUTLOOK_CLIENT_ID` | （空） | Azure App registration 的 Application (client) ID |
-| `OUTLOOK_TENANT_ID` | `organizations` | 路径 A：组织租户 ID；路径 B（当前）：`organizations`；个人账号日历：`common` |
+| `OUTLOOK_TENANT_ID` | `organizations` | App registration Overview 页的 Directory (tenant) ID；留空使用 `organizations` |
 | `OUTLOOK_AUTH_FLOW` | `device` | `device` 设备代码流 / `interactive` 浏览器流程（后者需在 Azure 配置重定向 URI） |
 | `OUTLOOK_TOKEN_FILE` | `credentials/outlook_token.bin` | MSAL token 缓存路径 |
 | `GOOGLE_CALENDAR_ID` | `primary` | Google 日历 ID（仅 provider=google） |
@@ -158,9 +183,9 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 ├── src/
 │   ├── config.py             # 配置：后端、时区、路径、账号 ID
 │   ├── service_factory.py    # 按 CALENDAR_PROVIDER 选择后端
-│   ├── ics_service.py        # ICS 订阅后端（当前默认，只读）
-│   ├── outlook_auth.py       # Microsoft OAuth（MSAL，暂不可用）
-│   ├── outlook_service.py    # Microsoft Graph 日历封装（暂不可用）
+│   ├── ics_service.py        # ICS 订阅后端（只读后备）
+│   ├── outlook_auth.py       # Microsoft OAuth（MSAL 设备码流，中国区）
+│   ├── outlook_service.py    # Microsoft Graph 日历封装（中国区）
 │   ├── google_auth.py        # Google OAuth（过渡期保留）
 │   ├── calendar_service.py   # Google Calendar 封装（过渡期保留）
 │   └── datetime_utils.py     # timezone-aware 日期时间工具
@@ -184,6 +209,6 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 
 - Session 1：项目骨架 + Google OAuth + `list_events`（已完成）
 - 切换：Outlook Calendar 接入（已完成；后发现工作邮箱为世纪互联版，全球 OAuth 端点不可用）
-- 当前：ICS 订阅后端（发布日历，只读）
-- Session 2：`find_free_time`（可基于 ICS 查询结果计算）；`create_event` 需写权限路径——候选：世纪互联云注册应用 + 中国区端点 OAuth（需管理员），或 Outlook 桌面版本地自动化（若安装了桌面版）
+- 当前：Outlook 中国区 Graph OAuth 接入（进行中）；ICS 只读后备已就绪
+- Session 2：`create_event` + `find_free_time`（基于中国区 Graph 读写）
 - 之后：验证稳定后清理不可用后端；按需评估修改、删除日程
