@@ -95,6 +95,14 @@ class EventDictTests(unittest.TestCase):
     def test_strip_html(self):
         self.assertEqual(_strip_html("<p>hello <b>world</b></p>"), "hello world")
 
+    def test_strip_html_decodes_entities(self):
+        # Outlook 空正文常为 "&nbsp;"，应解码为空白并返回 None
+        self.assertEqual(_strip_html("<p>a&nbsp;b</p>"), "a b")
+
+    def test_strip_html_empty_returns_none(self):
+        self.assertIsNone(_strip_html("&nbsp;"))
+        self.assertIsNone(_strip_html("<p> </p>"))
+
 
 if __name__ == "__main__":
     unittest.main()

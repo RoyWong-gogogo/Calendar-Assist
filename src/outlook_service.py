@@ -8,6 +8,7 @@ Graph 端点由 OUTLOOK_CLOUD 控制（china 默认 / global），见 src/config
 
 from __future__ import annotations
 
+import html
 import re
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -184,10 +185,14 @@ def _to_event_dict(item: dict) -> dict:
     }
 
 
-def _strip_html(text: str) -> str:
-    """去掉 Outlook 正文里的 HTML 标签，便于在终端显示。"""
-    plain = _HTML_TAG_RE.sub(" ", text)
-    return re.sub(r"\s+", " ", plain).strip()
+def _strip_html(text: str) -> str | None:
+    """去掉 Outlook 正文里的 HTML 标签与实体，便于在终端显示。
+
+    无实际内容时（如空正文只剩 &nbsp;）返回 None。
+    """
+    plain = html.unescape(_HTML_TAG_RE.sub(" ", text))
+    stripped = re.sub(r"\s+", " ", plain).strip()
+    return stripped or None
 
 
 def parse_graph_datetime(value: dict | None) -> datetime | None:
