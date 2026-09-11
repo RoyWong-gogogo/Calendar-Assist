@@ -7,6 +7,8 @@
     python scripts/update_event.py --event-id XXX --start 2026-09-14T16:00 --duration 60          # 预览
     python scripts/update_event.py --event-id XXX --start 2026-09-14T16:00 --duration 60 --yes    # 执行
     python scripts/update_event.py --event-id XXX --title "新标题" --location "新地点" --yes
+    python scripts/update_event.py --event-id XXX --room 801 --yes            # 改会议室
+    python scripts/update_event.py --event-id XXX --room "" --yes             # 取消会议室
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.conflicts import find_conflicts
 from src.datetime_utils import get_tz, parse_iso, to_iso
+from src.rooms import expand_room
 from src.service_factory import get_calendar_service_class
 
 
@@ -32,6 +35,7 @@ def main() -> int:
     parser.add_argument("--end", metavar="ISO", help="新结束时间（与 --duration 二选一）")
     parser.add_argument("--duration", type=int, metavar="分钟", help="新持续时长（分钟，与 --end 二选一）")
     parser.add_argument("--location", help="新地点（传空字符串表示清空）")
+    parser.add_argument("--room", help="会议室（编号 / 名称 / 邮箱；传空字符串表示取消会议室）")
     parser.add_argument("--description", help="新备注（传空字符串表示清空）")
     parser.add_argument("--yes", action="store_true", help="确认执行（缺省只预览）")
     args = parser.parse_args()
@@ -40,7 +44,7 @@ def main() -> int:
     if args.end is not None and args.duration is not None:
         parser.error("--end 与 --duration 必须二选一")
     if not (has_time or args.title is not None or args.location is not None
-            or args.description is not None):
+            or args.description is not None or args.room is not None):
         parser.error("至少提供一项要修改的字段")
 
     try:
@@ -62,12 +66,37 @@ def main() -> int:
 
         time_changed = (new_start != current["start"]) or (new_end != current["end"])
 
+        # 会议室：None=不变；""=取消；其他=改为该会议室（以 resource 与会人形式预订）
+        room_changed = args.room is not None
+        new_rooms = list(current.get("rooms") or [])
+        room_address = None
+        if room_changed:
+            if args.room.strip():
+                room_address = expand_room(args.room)
+                new_rooms = [room_address]
+            else:
+                new_rooms = []
+
         # 时间有变化时做冲突检查（排除自身）
         conflicts = []
         if time_changed:
             nearby = service.list_events(new_start, new_end)
             conflicts = find_conflicts(nearby, new_start, new_end,
                                        exclude_event_id=args.event_id)
+
+        # 会议室忙闲检查（新订 / 更换会议室，或时间有变化时）
+        room_busy: list = []
+        if room_address and (room_changed or time_changed):
+            if not hasattr(service, "get_schedule"):
+                raise RuntimeError(
+                    "会议室功能仅 Outlook 后端支持（当前后端没有 get_schedule）"
+                )
+            info = service.get_schedule([room_address], new_start, new_end)[0]
+            if info["error"]:
+                raise ValueError(
+                    f"会议室邮箱不存在或无法解析: {room_address}（{info['error']}）"
+                )
+            room_busy = info["busy"]
 
         tz = get_tz()
         print("原日程:")
@@ -78,6 +107,7 @@ def main() -> int:
             "start": new_start,
             "end": new_end,
             "location": args.location if args.location is not None else current["location"],
+            "rooms": new_rooms,
             "description": (args.description if args.description is not None
                             else current["description"]),
         }, tz)
@@ -94,6 +124,13 @@ def main() -> int:
             print("如需仍要修改，请加 --yes 重新运行。")
             return 3
 
+        if room_busy:
+            print(f"\n⚠️ 会议室 {room_address} 在新时段已被占用:")
+            for slot_start, slot_end in room_busy:
+                print(f"  - {_fmt(slot_start, slot_end, tz)}")
+            print("如需仍要修改，请加 --yes 重新运行。")
+            return 3
+
         if not args.yes:
             print("\n（预览模式，未实际修改。确认无误后加 --yes 执行。）")
             return 0
@@ -105,6 +142,7 @@ def main() -> int:
             end=new_end if args.end is not None or args.duration is not None else None,
             location=args.location,
             description=args.description,
+            room=args.room,
         )
     except RuntimeError as exc:
         print(f"[日历错误] {exc}", file=sys.stderr)
@@ -122,6 +160,9 @@ def _print_event(ev: dict, tz) -> None:
     print(f"- [{_fmt(ev['start'], ev['end'], tz)}] {ev['title']}")
     if ev.get("location"):
         print(f"    地点: {ev['location']}")
+    rooms = ev.get("rooms")
+    if rooms:
+        print(f"    会议室: {', '.join(rooms)}")
     description = (ev.get("description") or "").strip()
     if description:
         print(f"    备注: {description[:80]}" + ("…" if len(description) > 80 else ""))

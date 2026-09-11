@@ -16,6 +16,8 @@
 | 修改日程 `update_event` | 已实现（Outlook 后端；预览 + 冲突检查 + --yes 确认） |
 | 删除日程 `delete_event` | 已实现（Outlook 后端；预览 + --yes 确认） |
 | 事件搜索 `search_events` | 已实现（时间范围 + 关键词确定性匹配） |
+| 会议室查询 `list_rooms` | 已实现（仅 Outlook 后端；中国区 Graph 无会议室清单接口，按邮箱命名规律扫描） |
+| 会议室预订 | 已实现（`create_event --room` / `update_event --room`，会议室以 resource 与会人写入事件） |
 
 修改 / 删除走安全流程：搜索 → 匹配候选（多个时人工选择）→ 展示目标 → 预览（含冲突提示）→ `--yes` 确认 → 按 event id 执行。
 
@@ -143,6 +145,36 @@ OUTLOOK_TENANT_ID=organizations
 
 > 权限说明：申请的是委托权限 `Calendars.ReadWrite`（读写）。当前只用到读取，但为了后续实现创建日程时不需要重新授权，一开始就申请了读写范围。
 
+## 会议室（CDConfRoom）
+
+会议室是 Exchange **room mailbox**（资源邮箱，形如 `CDConfRoom808@arraycomm.com`），和"地点文本"是两回事：只有把会议室作为 **resource 与会人** 写进事件，才会真正占用会议室日历；只写 `--location` 只是一个标签。
+
+中国区 Graph 的常规"会议室清单"接口都走不通（2026-09 实测）：
+
+| 接口 | 实测结果 | 原因 |
+| --- | --- | --- |
+| `GET /me/findRooms` | 403 Authorization_RequestDenied | 需要额外委托权限（当前应用只有 `Calendars.ReadWrite`） |
+| `GET /places/microsoft.graph.room` | 403 UnknownError | Places API 未在中国区开放 |
+| `POST /me/findMeetingTimes` | 405 | 中国区 Graph 未提供该端点 |
+
+可行路径是**命名规律 + 忙闲查询**：`POST /me/calendar/getSchedule`（`Calendars.ReadWrite` 即可）能查询任意邮箱（含会议室）的忙闲，因此按「前缀 + 编号 @ 域名」扫描编号区间就能确认哪些会议室真实存在。
+
+```powershell
+./.venv/Scripts/python.exe scripts/list_rooms.py --date 2026-09-15          # 扫描编号 800-850，列出存在的会议室与占用
+./.venv/Scripts/python.exe scripts/list_rooms.py --from 2026-09-15T10:00 --to 2026-09-15T11:00 --json
+
+# 预订 / 更换 / 取消会议室
+./.venv/Scripts/python.exe scripts/create_event.py --title "投资人访谈" --start 2026-09-15T10:00 --duration 60 --room 801
+./.venv/Scripts/python.exe scripts/update_event.py --event-id <id> --room 803 --yes
+./.venv/Scripts/python.exe scripts/update_event.py --event-id <id> --room "" --yes
+```
+
+- `--room` 接受编号（`801`）、名称（`CDConfRoom801`）或完整邮箱；预订前脚本会用 `getSchedule` 检查忙闲，被占用时**停止操作**并给出提示（退出码 3；`create_event` 加 `--force-room` 可强制创建，`update_event` 加 `--yes` 可继续）。
+- 前缀与域名可用 `.env` 的 `ROOM_NAME_PREFIX` / `ROOM_EMAIL_DOMAIN` 覆盖，扫描区间用 `--first` / `--last`。
+- 本租户实测存在的会议室：`CDConfRoom801` `802` `803` `804` `805` `808`（600 / 700 / 900 编号段均无房间）。
+- 会议室是否自动接受邀请取决于 Exchange 会议室策略；脚本负责发出邀请，若房间配置为冲突自动拒绝，邀请会被拒。
+- 本租户实测：会议室**自动接受**邀请（事件与会人 status.response = accepted，约 1 秒内完成）。但**跨邮箱忙闲缓存有延迟**——刚预订完的几分钟内，`getSchedule` / `list_rooms` 可能仍把该会议室显示为空闲，判断预订结果请以事件里会议室与会人的响应状态为准。
+
 ## Google Calendar（过渡期保留）
 
 Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src/calendar_service.py`，Outlook 验证通过后将删除。如需临时切回：在 `.env` 中设置 `CALENDAR_PROVIDER=google`，并按原流程配置（Google Cloud 项目 → 启用 Calendar API → OAuth consent screen（External + Testing，邮箱加入 Test users）→ 创建 Desktop app 类型的 OAuth client ID → JSON 保存为 `credentials/credentials.json`）。
@@ -159,6 +191,11 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 # 创建日程（--end 与 --duration 二选一）
 ./.venv/Scripts/python.exe scripts/create_event.py --title "和王总开会" --start 2026-09-14T15:00 --duration 60
 ./.venv/Scripts/python.exe scripts/create_event.py --title "方案评审" --start 2026-09-15T14:00 --end 2026-09-15T15:30 --location "会议室 A" --description "评审 v2 方案"
+./.venv/Scripts/python.exe scripts/create_event.py --title "投资人访谈" --start 2026-09-15T10:00 --duration 60 --room 801   # 预订 CDConfRoom801
+
+# 会议室清单与占用（中国区 Graph 无会议室清单接口，按邮箱命名规律扫描）
+./.venv/Scripts/python.exe scripts/list_rooms.py --date 2026-09-15
+./.venv/Scripts/python.exe scripts/list_rooms.py --from 2026-09-15T10:00 --to 2026-09-15T11:00 --json
 
 # 查找空闲时间（返回所有可容纳该时长的连续区间）
 ./.venv/Scripts/python.exe scripts/find_free_time.py --from 2026-09-14T09:00 --to 2026-09-14T18:00 --duration 60
@@ -187,6 +224,8 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 | `OUTLOOK_TENANT_ID` | `organizations` | App registration Overview 页的 Directory (tenant) ID；留空使用 `organizations` |
 | `OUTLOOK_AUTH_FLOW` | `device` | `device` 设备代码流 / `interactive` 浏览器流程（后者需在 Azure 配置重定向 URI） |
 | `OUTLOOK_TOKEN_FILE` | `credentials/outlook_token.bin` | MSAL token 缓存路径 |
+| `ROOM_NAME_PREFIX` | `CDConfRoom` | 会议室邮箱前缀（形如 `CDConfRoom808@arraycomm.com`） |
+| `ROOM_EMAIL_DOMAIN` | `arraycomm.com` | 会议室邮箱域名 |
 | `GOOGLE_CALENDAR_ID` | `primary` | Google 日历 ID（仅 provider=google） |
 | `GOOGLE_CREDENTIALS_FILE` | `credentials/credentials.json` | Google OAuth 客户端 JSON（仅 provider=google） |
 | `GOOGLE_TOKEN_FILE` | `credentials/token.json` | Google token 缓存（仅 provider=google） |
@@ -207,6 +246,7 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 │   ├── ics_service.py        # ICS 订阅后端（只读后备）
 │   ├── outlook_auth.py       # Microsoft OAuth（MSAL 设备码流，中国区）
 │   ├── outlook_service.py    # Microsoft Graph 日历封装（中国区，读+写+改+删）
+│   ├── rooms.py              # 会议室邮箱地址归一化（编号 / 名称 / 邮箱）
 │   ├── free_time.py          # 空闲时间纯算法（后端无关）
 │   ├── conflicts.py          # 冲突检测纯算法（后端无关）
 │   ├── event_match.py        # 事件关键词匹配（后端无关）
@@ -220,6 +260,7 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 │   ├── search_events.py      # 搜索日程（修改/删除第一步）
 │   ├── update_event.py       # 修改日程（预览+冲突检查+确认）
 │   ├── delete_event.py       # 删除日程（预览+确认）
+│   ├── list_rooms.py         # 会议室清单与占用
 │   └── register_outlook_app.py # 应用注册引导（门户被租户限制时的一次性工具）
 └── tests/
     ├── test_datetime_utils.py
@@ -230,7 +271,8 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
     ├── test_update_delete.py
     ├── test_ics_parsing.py
     ├── test_outlook_cloud.py
-    └── test_outlook_parsing.py
+    ├── test_outlook_parsing.py
+    └── test_rooms.py
 ```
 
 ## 安全注意
@@ -247,4 +289,5 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 - Session 2：`create_event` + `find_free_time`（已完成，基于中国区 Graph 读写）
 - Session 3：`update_event` + `delete_event` + 事件搜索匹配 + 冲突检查（已完成，全部基于 mock 测试）
 - **当前建议：真实使用一到两周**，记录不顺手的细节（"下午"的边界、默认时长、默认提醒等），作为下一阶段的输入
+- Session 4：会议室（CDConfRoom）查询与预订：`scripts/list_rooms.py` + `create_event --room` / `update_event --room`（已完成，含 `getSchedule` 忙闲检查与占用拦截）
 - 之后候选：`create_event` 支持与会人（自动发会议邀请）、`find_free_time` 区分 showAs 空闲状态、清理 Google / ICS 备用后端

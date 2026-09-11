@@ -96,6 +96,15 @@ OUTLOOK_AUTHORITY_HOST: str = _outlook_cloud_config()["authority_host"]
 GRAPH_BASE_URL: str = _outlook_cloud_config()["graph_base"]
 OUTLOOK_SCOPES: list[str] = _outlook_cloud_config()["scopes"]
 
+# ---- 会议室（Exchange room mailbox）----
+# 会议室邮箱形如 CDConfRoom808@arraycomm.com（前缀 + 编号 @ 域名）。
+# 中国区 Graph 没有可用的会议室清单接口：/me/findRooms 需要额外委托权限
+# （当前应用只有 Calendars.ReadWrite，返回 403），/places 未在中国区开放。
+# 因此会议室通过「前缀 + 编号 @ 域名」规律扫描发现，忙闲用 getSchedule 查询，
+# 预订时把会议室作为 resource 与会人写入事件（见 src/rooms.py）。
+ROOM_NAME_PREFIX: str = os.environ.get("ROOM_NAME_PREFIX") or "CDConfRoom"
+ROOM_EMAIL_DOMAIN: str = os.environ.get("ROOM_EMAIL_DOMAIN") or "arraycomm.com"
+
 # 要操作的 Google 日历 ID，"primary" 即用户主日历。
 GOOGLE_CALENDAR_ID: str = os.environ.get("GOOGLE_CALENDAR_ID", "primary")
 

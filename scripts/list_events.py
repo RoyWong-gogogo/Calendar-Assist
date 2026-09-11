@@ -67,6 +67,7 @@ def main() -> int:
                 "all_day": ev["all_day"],
                 "location": ev["location"],
                 "description": ev["description"],
+                "rooms": ev.get("rooms") or [],
             }
             for ev in events
         ]
@@ -84,6 +85,8 @@ def main() -> int:
         print(f"- [{_format_time_range(ev, tz)}] {ev['title']}")
         if ev["location"]:
             print(f"    地点: {ev['location']}")
+        if ev.get("rooms"):
+            print(f"    会议室: {', '.join(ev['rooms'])}")
         description = (ev["description"] or "").strip()
         if description:
             print(f"    备注: {description}")

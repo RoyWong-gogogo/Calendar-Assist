@@ -37,6 +37,8 @@ v0.1 的三个核心能力（均已实现）：
 - 修改日程 `update_event` — 已实现（仅 Outlook 后端；`scripts/update_event.py`）
 - 删除日程 `delete_event` — 已实现（仅 Outlook 后端；`scripts/delete_event.py`）
 - 事件搜索 `search_events` — 已实现（时间范围 + 关键词的确定性匹配；`scripts/search_events.py`）
+- 会议室查询 `list_rooms` — 已实现（仅 Outlook 后端；中国区 Graph 无会议室清单接口，按会议室邮箱命名规律扫描编号区间；`scripts/list_rooms.py`）
+- 会议室预订 — 已实现（`create_event --room` / `update_event --room`，会议室以 **resource 与会人** 写入事件）
 
 **暂不实现**：修改 / 删除日程的批量操作、独立聊天程序、Web UI、App、React、LangChain、LangGraph、向量数据库、本地日程数据库、多 Agent、MCP Server、独立 LLM API、Whisper / 语音识别。
 
@@ -65,6 +67,9 @@ python scripts/find_free_time.py --from 2026-09-14T09:00 --to 2026-09-14T18:00 -
 python scripts/search_events.py --date 2026-09-14 --query 雅江
 python scripts/update_event.py --event-id <id> --start 2026-09-14T16:00 --duration 60          # 预览
 python scripts/update_event.py --event-id <id> --start 2026-09-14T16:00 --duration 60 --yes    # 执行
+python scripts/create_event.py --title "投资人访谈" --start 2026-09-15T10:00 --duration 60 --room 801
+python scripts/list_rooms.py --date 2026-09-15     # 会议室清单与占用（扫描编号 800-850）
+python scripts/update_event.py --event-id <id> --room 803 --yes    # 改会议室（--room "" 取消）
 python scripts/delete_event.py --event-id <id>          # 预览
 python scripts/delete_event.py --event-id <id> --yes    # 执行
 python -m unittest discover -s tests -v            # 运行测试
@@ -93,3 +98,11 @@ python -m unittest discover -s tests -v            # 运行测试
 **冲突检查**：`update_event.py` 在时间变化时自动查询新时段的已有日程（排除自身 event id）并显示冲突；存在冲突时明确告知用户冲突事件，由用户决定是否仍加 `--yes` 继续。`create_event` 目前不做自动冲突检查，Codex 在创建前应先查询目标时段（发现冲突时提醒用户，是否创建由用户决定）。
 
 **重复日程**：遇到重复日程（instance / series master）时，修改和删除前必须向用户说明影响范围（“仅这一场”或“整个系列”），语义不明确时先让用户选择，不得因实现方便而擅自操作整个系列。脚本会对重复日程打印 ⚠️ 提示。
+
+## 会议室（CDConfRoom）
+
+- 会议室是 Exchange **room mailbox**（资源邮箱，`CDConfRoomNNN@arraycomm.com`），和“地点文本”不是一回事：只有把会议室作为 **resource 与会人** 写入事件（`--room`）才算真正预订；只写 `--location` 只是标签，不会占用会议室。
+- 中国区 Graph 没有可用的会议室清单接口（`/me/findRooms` 缺委托权限返回 403、`/places` 返回 403、`/me/findMeetingTimes` 返回 405，2026-09 实测），因此用 `scripts/list_rooms.py` 按「前缀 + 编号 @ 域名」扫描编号区间，并用 `getSchedule` 确认邮箱是否存在、忙闲如何。前缀 / 域名见 `src/config.py` 的 `ROOM_NAME_PREFIX` / `ROOM_EMAIL_DOMAIN`。
+- 预订前必须先查会议室忙闲（脚本已内置）：会议室在目标时段被占用时，`create_event --room` 会打印 `[会议室占用]` 并**停止创建**（退出码 3；只有用户确认强行创建才加 `--force-room`）；`update_event --room` 会在预览里打印 ⚠️ 并停止（退出码 3；用户确认才加 `--yes`）。
+- 改 / 取消会议室同样走 search → 匹配 → 展示 → 确认 → `update_event --room`（`--room ""` 取消）；会议室是否自动接受邀请由 Exchange 策略决定，脚本只负责发出邀请。
+- 本租户实测：会议室会自动接受邀请（事件与会人 `status.response = accepted`）；但**跨邮箱忙闲缓存有延迟**，刚订完的几分钟内 `list_rooms` / `getSchedule` 可能仍显示该会议室空闲——判断是否订上要看事件的会议室与会人响应状态，不要仅凭忙闲视图下结论。
