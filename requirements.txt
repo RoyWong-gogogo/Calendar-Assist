@@ -2,6 +2,10 @@
 msal>=1.31
 requests>=2.32
 
+# ICS 订阅链接解析（当前默认后端，只读）
+icalendar>=5.0
+recurring-ical-events>=2.0
+
 # Google Calendar API + OAuth（过渡期保留，Outlook 验证通过后移除）
 google-api-python-client>=2.100
 google-auth>=2.23

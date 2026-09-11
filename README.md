@@ -2,7 +2,7 @@
 
 轻量级个人日程助手。**Codex 对话窗口就是交互入口**：直接用自然语言问日程、约会议、找空档，Codex 调用本项目中的工具读写日历，并把结果告诉你。
 
-**当前默认接入 Outlook Calendar（Microsoft Graph API）**。Google Calendar 无法完成登录，因此切换到微软体系；Google 实现过渡期保留，可通过 `CALENDAR_PROVIDER=google` 切换，Outlook 验证通过后将移除。
+**当前默认通过 ICS 订阅链接只读访问 Outlook 工作日历**（Outlook 网页版「发布日历」功能）。Google 实现过渡期保留，可通过 `CALENDAR_PROVIDER=google` 切换。
 
 **配置的日历服务是唯一日程事实源** —— 所有日程查询都实际读取日历 API，不依赖聊天记录。
 
@@ -10,7 +10,7 @@
 
 | 能力 | 状态 |
 | --- | --- |
-| 查询日程 `list_events` | 已实现（Outlook + Google 双后端） |
+| 查询日程 `list_events` | 已实现（ICS / Outlook / Google 多后端） |
 | 创建日程 `create_event` | 计划 Session 2 |
 | 查询空闲时间 `find_free_time` | 计划 Session 2 |
 
@@ -20,7 +20,7 @@
 
 - Windows + PowerShell
 - Python 3.11+（开发环境为 3.14）
-- 一个 Microsoft 365 工作/学校账号（当前后端）
+- 一个能登录 Outlook 网页版的工作账号（用于生成 ICS 订阅链接）
 
 ## 安装
 
@@ -29,7 +29,30 @@ py -3.14 -m venv .venv
 ./.venv/Scripts/python.exe -m pip install -r requirements.txt
 ```
 
-## Outlook Calendar 接入（当前默认）
+## ICS 订阅（当前默认后端）
+
+当前通过 **Outlook 网页版「发布日历」生成的 ICS 订阅链接**只读访问工作日历。无需 OAuth、无需应用注册、无需任何额外账号。
+
+背景：工作邮箱是**世纪互联运营的 Microsoft 365**（`partner.outlook.cn`），它与全球版 Azure / Microsoft 账号体系完全隔离——这正是之前 Azure 门户登录接连报错（AADSTS500011 等）的原因：世纪互联的工作账号在全球门户里根本不存在，全球 OAuth 端点（`login.microsoftonline.com` / `graph.microsoft.com`）也无法认证该账号，因此 Outlook OAuth 后端暂时不可用（见下文）。
+
+### 配置步骤
+
+1. 打开 Outlook 网页版 → 右上角设置（齿轮）→ **日历 → 共享日历**（直达：<https://partner.outlook.cn/calendar/options/calendar/SharedCalendars>）。
+2. 找到 **发布日历 (Publish a calendar)** 区域（注意不是上面的 "Share a calendar"，那是共享给其他人用的）。
+3. 选择你的主日历 → 点击 **Publish**。
+4. 生成两个链接：**复制 ICS 链接**（用于订阅的那个，不是 HTML 链接）。
+5. 粘贴到项目根目录 `.env` 的 `ICS_URL=` 后面。
+
+### 限制（重要）
+
+- **只读**：可以查询日程（Session 2 的空闲时间也基于查询结果计算），但**无法创建 / 修改 / 删除日程**。`create_event` 需要写权限路径（见开发计划）。
+- **非实时**：发布的是快照，日程改动通常延迟若干分钟甚至更久才会反映到链接里。
+- **链接即凭证**：任何拿到 ICS 链接的人都能查看日历内容，只保存在 `.env`，不要提交 Git、不要发给他人。
+- 发布内容的详细程度（是否包含标题 / 地点 / 备注）由发布选项决定；如果组织策略禁用发布，Publish 按钮会不可用。
+
+## Outlook OAuth（暂不可用，代码保留）
+
+`src/outlook_auth.py` / `src/outlook_service.py` 实现了完整的 Microsoft Graph OAuth 路径（MSAL 设备码流 + Graph API），但当前指向**全球端点**，无法认证世纪互联运营的工作账号。若将来要启用，需要在中国区端点（`login.partner.microsoftonline.cn` / `microsoftgraph.chinacloudapi.cn`）注册应用并授权，并把 `src/outlook_auth.py` 的 `AUTHORITY`、`src/outlook_service.py` 的 `GRAPH_BASE` 两处常量改为中国区地址。以下原始说明保留供参考。
 
 ### 第 1 步：注册 Azure 应用（一次性，人工步骤）
 
@@ -111,7 +134,8 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `CALENDAR_PROVIDER` | `outlook` | 日历后端：`outlook` / `google`（过渡期） |
+| `CALENDAR_PROVIDER` | `ics` | 日历后端：`ics` / `outlook` / `google` |
+| `ICS_URL` | （空） | Outlook「发布日历」生成的 ICS 订阅链接（当前后端必填；机密，等同凭证） |
 | `CALENDAR_TIMEZONE` | `Asia/Shanghai` | 解析日期时间的默认时区（IANA 名称） |
 | `OUTLOOK_CLIENT_ID` | （空） | Azure App registration 的 Application (client) ID |
 | `OUTLOOK_TENANT_ID` | `organizations` | 路径 A：组织租户 ID；路径 B（当前）：`organizations`；个人账号日历：`common` |
@@ -134,8 +158,9 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 ├── src/
 │   ├── config.py             # 配置：后端、时区、路径、账号 ID
 │   ├── service_factory.py    # 按 CALENDAR_PROVIDER 选择后端
-│   ├── outlook_auth.py       # Microsoft OAuth（MSAL，设备代码流）
-│   ├── outlook_service.py    # Microsoft Graph 日历封装
+│   ├── ics_service.py        # ICS 订阅后端（当前默认，只读）
+│   ├── outlook_auth.py       # Microsoft OAuth（MSAL，暂不可用）
+│   ├── outlook_service.py    # Microsoft Graph 日历封装（暂不可用）
 │   ├── google_auth.py        # Google OAuth（过渡期保留）
 │   ├── calendar_service.py   # Google Calendar 封装（过渡期保留）
 │   └── datetime_utils.py     # timezone-aware 日期时间工具
@@ -143,6 +168,7 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 │   └── list_events.py        # 查询日程
 └── tests/
     ├── test_datetime_utils.py
+    ├── test_ics_parsing.py
     └── test_outlook_parsing.py
 ```
 
@@ -157,6 +183,7 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 ## 开发计划
 
 - Session 1：项目骨架 + Google OAuth + `list_events`（已完成）
-- 切换：Outlook Calendar 接入（当前，进行中）
-- Session 2：`create_event` + `find_free_time`
-- 之后：验证 Outlook 稳定后删除 Google 实现；按需评估修改、删除日程
+- 切换：Outlook Calendar 接入（已完成；后发现工作邮箱为世纪互联版，全球 OAuth 端点不可用）
+- 当前：ICS 订阅后端（发布日历，只读）
+- Session 2：`find_free_time`（可基于 ICS 查询结果计算）；`create_event` 需写权限路径——候选：世纪互联云注册应用 + 中国区端点 OAuth（需管理员），或 Outlook 桌面版本地自动化（若安装了桌面版）
+- 之后：验证稳定后清理不可用后端；按需评估修改、删除日程

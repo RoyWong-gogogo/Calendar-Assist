@@ -1,6 +1,7 @@
-"""按 CALENDAR_PROVIDER 返回日历服务实现（过渡期 Google / Outlook 并存）。
+"""按 CALENDAR_PROVIDER 返回日历服务实现。
 
-Outlook 验证通过后，将删除 Google 实现并简化本模块。
+当前默认 ics（只读订阅）；outlook（世纪互联工作账号暂不可用）与
+google（过渡期保留）作为备选后端。
 """
 
 from __future__ import annotations
@@ -11,6 +12,10 @@ from src.config import CALENDAR_PROVIDER
 def get_calendar_service_class():
     """返回当前配置对应的日历服务类。"""
     provider = (CALENDAR_PROVIDER or "").strip().lower()
+    if provider == "ics":
+        from src.ics_service import IcsCalendarService
+
+        return IcsCalendarService
     if provider == "outlook":
         from src.outlook_service import OutlookCalendarService
 

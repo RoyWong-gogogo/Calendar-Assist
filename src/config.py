@@ -39,8 +39,13 @@ def _resolve_path(env_key: str, default: Path) -> Path:
 CALENDAR_TIMEZONE: str = os.environ.get("CALENDAR_TIMEZONE", "Asia/Shanghai")
 
 # ---- 日历服务提供方 ----
-# 过渡期 Outlook（默认）与 Google 并存；Outlook 验证通过后将移除 Google 实现。
-CALENDAR_PROVIDER: str = os.environ.get("CALENDAR_PROVIDER") or "outlook"
+# ics（默认，只读订阅）/ outlook（暂不可用，见下）/ google（过渡期保留）
+CALENDAR_PROVIDER: str = os.environ.get("CALENDAR_PROVIDER") or "ics"
+
+# ---- ICS 订阅（当前默认后端）----
+# Outlook 网页版「发布日历」生成的 ICS 订阅链接（只读）。
+# 注意：链接本身是机密，任何拿到的人都能查看日历，只应保存在 .env。
+ICS_URL: str = os.environ.get("ICS_URL") or ""
 
 # ---- Outlook Calendar（Microsoft Graph）----
 # Azure App registration 的 Application (client) ID（使用 Outlook 时必填）
