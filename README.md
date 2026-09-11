@@ -58,6 +58,8 @@ py -3.14 -m venv .venv
 
 用工作账号登录 <https://portal.azure.cn/>（无订阅不影响，应用注册不需要订阅）：
 
+> **门户报 401（You don't have access）时的替代方案**：部分租户（如 ARRAYCOMM）限制普通用户访问门户的 Entra 管理区域，但允许用户注册应用。此时可运行 `scripts/register_outlook_app.py`（Azure CLI 第一方身份设备码登录 + Graph API 注册，自动把两个 ID 写入 `.env`）。若脚本也报 403（租户禁止用户注册应用），则需要 IT 管理员按下述步骤代为注册，或授予 Application Developer 角色。
+
 1. 顶部搜索 **应用注册 (App registrations)**（或首页 "Manage Microsoft Entra ID" 卡片 → View → 左侧 Applications → App registrations）。
 2. **New registration**：Name 填 `calendar-agent`；Supported account types 选 **Accounts in this organizational directory only（单租户）**；Redirect URI 留空（设备代码流不需要），注册。
 3. Overview 页复制两个值填入 `.env`：**Application (client) ID** → `OUTLOOK_CLIENT_ID`；**Directory (tenant) ID** → `OUTLOOK_TENANT_ID`。
