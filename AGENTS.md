@@ -130,3 +130,4 @@ python -m unittest discover -s tests -v            # 运行测试
 - **收尾从简**：动作完成 + 一次必要回读即可，不再追加可做可不做的检查（提交后的重复 `git status`、被删事件后的再确认等）。
 - **汇报顺序**：先给结果，再简述过程与限制；总结保持短，长分析只放在用户明确追问时。
 - **日历脚本要联网**：本机沙箱默认拦截网络，日历脚本访问 Graph 需要升级授权——直接在升级请求里执行（或按已登记的 prefix rule 运行），不要为了省授权去改代码或换数据源。
+- **推送走 SSH + gh**：`origin` 已指向私有仓库 `git@github.com:RoyWong-gogogo/Calendar-Assist.git`，提交后直接 `git push`（写 .git 需要升级授权）。`gh` 已完成设备码授权（token 存 Windows 凭据管理器，`git_protocol=ssh`）；需要重新授权时执行 `gh auth login --hostname github.com --git-protocol ssh --skip-ssh-key --web`，把一次性代码与 https://github.com/login/device 清楚转达用户并等其完成。仓库含 `data/contacts.csv` 中的同事邮箱，保持私有，改公开前必须征得用户同意。

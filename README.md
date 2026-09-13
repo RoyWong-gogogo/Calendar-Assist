@@ -332,6 +332,26 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
     └── test_rooms.py
 ```
 
+## 推送到 GitHub
+
+远端 `origin` 是指向私有仓库 https://github.com/RoyWong-gogogo/Calendar-Assist 的 SSH 地址（`git@github.com:RoyWong-gogogo/Calendar-Assist.git`），本机 SSH 密钥已验证可用（`ssh -T git@github.com` 返回 `Hi RoyWong-gogogo!`）。日常推送一条命令：
+
+```powershell
+git push
+```
+
+本机已装 GitHub CLI（`gh`；安装命令 `winget install --id GitHub.cli -e`）并完成过一次设备码授权，token 存在 Windows 凭据管理器（keyring），`git_protocol=ssh`。换机器或凭据失效时重新授权：
+
+```powershell
+gh auth login --hostname github.com --git-protocol ssh --skip-ssh-key --web
+```
+
+终端会打印一次性代码（形如 `9A18-26F0`）和地址 https://github.com/login/device ，在浏览器输入代码后点 Authorize 即可，授权完成后终端显示 `Logged in as RoyWong-gogogo`。为避免自动弹窗，上面用 `GH_BROWSER=echo` 让 gh 只打印地址、由用户手动打开；若希望自动弹出浏览器，去掉该环境变量即可。
+
+首次建仓用的是 `gh repo create Calendar-Assist --private --source . --remote origin --push`，仓库已存在时不要重复执行。
+
+注意：仓库含 `data/contacts.csv`（同事与外部联系人邮箱），保持私有；改成公开前必须先征得用户同意。
+
 ## 安全注意
 
 以下内容**绝不能提交 Git**（`.gitignore` 已排除）：
@@ -350,4 +370,5 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 - Session 5：流程提速（已完成）：`--query` 一次调用定位并执行、默认执行（`--dry-run` 预览）、冲突与会议室忙闲改为事后提醒
 - Session 6：与会人邀请（已完成）：`create_event --attendee` / `update_event --attendee` / `--remove-attendee`（`src/attendees.py`）
 - Session 7：通讯录（已完成）：`data/contacts.csv`（姓名 ↔ 邮箱）+ `src/contacts.py` + `scripts/contacts.py`；`--attendee 姓名` 直接解析，查不到 / 命中多个都停下
+- Session 8：推送到 GitHub（已完成）：`origin` 指向私有仓库 RoyWong-gogogo/Calendar-Assist，SSH 推送；本机安装 GitHub CLI 并完成设备码授权（token 存 Windows 凭据管理器）
 - 之后候选：`find_free_time` 区分 showAs 空闲状态、清理 Google / ICS 备用后端
