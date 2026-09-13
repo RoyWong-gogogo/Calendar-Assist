@@ -39,6 +39,8 @@ v0.1 的三个核心能力（均已实现）：
 - 事件搜索 `search_events` — 已实现（时间范围 + 关键词的确定性匹配；`scripts/search_events.py`）
 - 会议室查询 `list_rooms` — 已实现（仅 Outlook 后端；中国区 Graph 无会议室清单接口，按会议室邮箱命名规律扫描编号区间；`scripts/list_rooms.py`）
 - 会议室预订 — 已实现（`create_event --room` / `update_event --room`，会议室以 **resource 与会人** 写入事件）
+- 邀请与会人 — 已实现（`create_event --attendee` / `update_event --attendee` / `--remove-attendee`，以 required 类型与会人发出邀请）
+- 通讯录 `contacts` — 已实现（只读；`data/contacts.csv` 是「姓名 → 邮箱」的唯一事实源，邀请时 `--attendee` 可直接写姓名；`src/contacts.py` / `scripts/contacts.py`）
 
 **暂不实现**：修改 / 删除日程的批量操作、独立聊天程序、Web UI、App、React、LangChain、LangGraph、向量数据库、本地日程数据库、多 Agent、MCP Server、独立 LLM API、Whisper / 语音识别。
 
@@ -70,7 +72,12 @@ python scripts/update_event.py --event-id <id> --start 2026-09-14T16:00 --durati
 python scripts/update_event.py --event-id <id> --start 2026-09-14T16:00 --duration 60 --dry-run   # 只看不改
 python scripts/create_event.py --title "投资人访谈" --start 2026-09-15T10:00 --duration 60 --room 801
 python scripts/list_rooms.py --date 2026-09-15     # 会议室清单与占用（扫描编号 800-850）
+python scripts/contacts.py --query nanqing         # 通讯录模糊查（姓名 → 邮箱）
+python scripts/contacts.py --name "Nanqing Zhou"   # 精确解析，输出邮箱（邀请时可直接写姓名）
+python scripts/contacts.py --list --external       # 列出全部 / 只看外部联系人
 python scripts/update_event.py --event-id <id> --room 803             # 改会议室（--room "" 取消）
+python scripts/update_event.py --event-id <id> --attendee a@arraycomm.com   # 邀请与会人（可重复传入）
+python scripts/update_event.py --event-id <id> --remove-attendee a@arraycomm.com  # 移除与会人
 python scripts/delete_event.py --event-id <id>                        # 直接删除
 python scripts/delete_event.py --query 客户会议 --date tomorrow       # 一条命令定位并删
 python -m unittest discover -s tests -v            # 运行测试
@@ -97,6 +104,15 @@ python -m unittest discover -s tests -v            # 运行测试
 **冲突改为事后提醒**：`update_event.py` / `create_event.py` 都不做事前冲突预检，写完读一次目标时段，把重叠的其它日程打印成 `[事后提醒]`。汇报时先给结果，再把提醒转述给用户（该时段还有哪些日程）；是否再调整由用户决定，写操作不因冲突阻塞。提醒读取失败不改退出码（写操作已成功）；`--no-notice` 可跳过这次读取。
 
 **重复日程**：遇到重复日程（instance / series master）时，修改和删除前必须向用户说明影响范围（“仅这一场”或“整个系列”），语义不明确时先让用户选择，不得因实现方便而擅自操作整个系列。脚本会对重复日程打印 ⚠️ 提示；`--query` 命中的若是系列母事件，脚本会停下（退出码 4）并要求改用 `--event-id` 明确指定。
+
+## 与会人邀请
+
+- 与会人和会议室在事件里是**同一个 attendees 数组**：普通与会人（required / optional）与会议室（resource）。`--attendee` / `--remove-attendee` 只增删普通与会人，**不会动已订的会议室**；只有显式给 `--room` 才会替换 resource 条目（见 `src/attendees.py` 的 `split_people` / `merge`）。
+- 邀请：`create_event --attendee 邮箱|姓名` 或 `update_event --attendee 邮箱|姓名`（可重复传入，required 类型）；移除：`update_event --remove-attendee 邮箱|姓名`。**姓名走通讯录 `data/contacts.csv` 解析**（`src/contacts.py`）：按姓名 / 别名 / 完整邮箱 / 邮箱本地部分比对，忽略大小写与空白（`Nanqing Zhou` = `nanqingzhou` = `nzhou`）；解析在发请求前完成，查不到或命中多个都直接报错（退出码 2，不猜地址，也不做任何网络请求），重复邀请按地址去重（大小写不敏感）。
+- 写 attendees 时 Graph 按新数组整体覆盖：已有与会人会被重新提交，其响应状态可能被重置；这是 Exchange 的语义，不是脚本 bug。
+- **不要凭姓名猜邮箱**：先查通讯录（`python scripts/contacts.py --query 关键词` 模糊找，或 `--name 姓名` 精确解析）；通讯录里没有就问用户，或扫历史日程的与会人（`list_events` 的 `attendees` 自带 name + address，取一段时间范围按姓名过滤，2026-09 实测有效），确认后再补进通讯录。中国区 Graph 没有可用的通讯录搜索（`/me/people` 的 `$search` 需 `property:value` 形式且实测返回 400）。
+- **通讯录维护**：`data/contacts.csv` 是「姓名 → 邮箱」的唯一事实源，列 `name,address,aliases,note`（`aliases` 用 `;` 分隔多个写法；外部联系人 `note` 写「外部: 域名」）。初始条目来自历史日历（2025-09 ~ 2026-09）的与会人扫描：132 个内部地址 + 64 个外部地址，已排除会议室邮箱。新增联系人直接编辑 CSV；姓名有别的写法（英文名 / 中文名 / 拼音）就填进 `aliases`，下次才解析得出来。
+- 邀请结果看事件里各与会人的响应状态：`accepted` / `tentativelyAccepted` / `declined` / `none`（刚发出时都是 `none`，对方操作后才变）；`update_event.py` 写完会把与会人连同响应状态打印出来，照此汇报即可。
 
 ## 会议室（CDConfRoom）
 

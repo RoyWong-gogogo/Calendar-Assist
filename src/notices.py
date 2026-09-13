@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from src.attendees import describe, is_resource
 from src.conflicts import find_conflicts
 from src.datetime_utils import get_tz
 from src.rooms import room_label
@@ -43,6 +44,14 @@ def print_event_detail(ev: dict, indent: str = "    ") -> None:
     description = (ev.get("description") or "").strip()
     if description:
         print(f"{indent}备注: {description[:80]}" + ("…" if len(description) > 80 else ""))
+
+
+def print_attendees(ev: dict, indent: str = "    ", label: str = "与会人") -> None:
+    """打印普通与会人（会议室由「会议室」那一行负责，这里不重复）。"""
+    people = [entry for entry in (ev.get("attendees") or []) if not is_resource(entry)]
+    if not people:
+        return
+    print(f"{indent}{label}: " + "，".join(describe(entry) for entry in people))
 
 
 def print_candidates(candidates: list[dict], tz=None) -> None:

@@ -5,7 +5,7 @@
     python scripts/create_event.py --title "周会" --start 2026-09-14T10:00 --duration 60
     python scripts/create_event.py --title "评审" --start 2026-09-15T14:00 --duration 90 --location "会议室 A" --description "评审方案"
     python scripts/create_event.py --title "投资人访谈" --start 2026-09-15T10:00 --duration 60 --room 801
-    python scripts/create_event.py --title "AI 工具使用现状汇报讨论" --start 2026-09-14T14:00 --duration 60 --attendee Emma.Zhou@arraycomm.com
+    python scripts/create_event.py --title "AI 工具使用现状汇报" --start 2026-09-14T14:00 --duration 60 --attendee "Emma Zhou" --attendee nzhou@arraycomm.com
 
 创建成功后会做一次事后提醒（该时段是否已有其它日程、会议室是否接受邀请）；
 写操作本身不做事前冲突 / 忙闲预检（延迟高），需要预检时先跑 list_events / list_rooms。
@@ -26,7 +26,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.datetime_utils import get_tz, parse_iso, to_iso
-from src.notices import print_conflict_notice, print_room_notice
+from src.attendees import is_resource
+from src.notices import print_attendees, print_conflict_notice, print_room_notice
 from src.rooms import expand_room
 from src.service_factory import get_calendar_service_class
 
@@ -40,8 +41,8 @@ def main() -> int:
     parser.add_argument("--location", help="地点（可选）")
     parser.add_argument("--description", help="备注（可选）")
     parser.add_argument("--room", help="会议室（编号如 801 / 名称 / 完整邮箱），作为 resource 与会人预订")
-    parser.add_argument("--attendee", action="append", metavar="邮箱",
-                        help="与会人邮箱（可重复传入邀请多人，required 类型）")
+    parser.add_argument("--attendee", action="append", metavar="邮箱|姓名",
+                        help="与会人（邮箱，或通讯录 data/contacts.csv 里的姓名；可重复传入，required 类型）")
     parser.add_argument("--force-room", action="store_true",
                         help="兼容保留（已不做事前忙闲预检，加不加都会创建）")
     parser.add_argument("--no-notice", action="store_true",
@@ -90,7 +91,8 @@ def main() -> int:
             "description": event["description"],
             "rooms": event.get("rooms") or [],
             "room_responses": event.get("room_responses") or [],
-            "attendees": args.attendee or [],
+            "attendees": [entry["address"] for entry in (event.get("attendees") or [])
+                          if not is_resource(entry)],
         }, ensure_ascii=False, indent=2))
         return 0
 
@@ -105,7 +107,9 @@ def main() -> int:
     print(f"- [{time_range}] {event['title']}")
     if event["location"]:
         print(f"    地点: {event['location']}")
-    if args.attendee:
+    if event.get("attendees"):
+        print_attendees(event)   # 回读的名字 <邮箱>，比回显输入更可靠
+    elif args.attendee:
         print(f"    与会人: {', '.join(args.attendee)}")
     if event.get("rooms"):
         print(f"    会议室: {', '.join(event['rooms'])}")

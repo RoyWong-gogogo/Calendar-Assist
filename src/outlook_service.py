@@ -16,6 +16,11 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+from src.attendees import (
+    clean_addresses,
+    merge as merge_attendees,
+    split_people,
+)
 from src.config import (
     CALENDAR_TIMEZONE,
     GRAPH_BASE_URL,
@@ -232,11 +237,16 @@ class OutlookCalendarService:
         location: str | None = None,
         description: str | None = None,
         room: str | None = None,
+        attendees: list[str] | None = None,
+        remove_attendees: list[str] | None = None,
         existing_attendees: list[dict] | None = None,
     ) -> dict:
         """按 id 修改事件，仅提交显式提供的字段，返回更新后的事件字典。
 
         - None（默认）表示该字段保持不变；location / description 传空字符串表示清空
+        - attendees 是要新增的与会人邮箱（required 类型）；remove_attendees 是要移除的
+          与会人邮箱（按地址匹配，大小写不敏感）。两者都只动普通与会人，
+          不会碰会议室（resource）条目，除非同时给了 room
         - room=None 表示会议室不变；room="" 表示取消会议室；其他值表示改为该会议室
           （会议室以 resource 与会人形式存在；改会议室时会先拿到原有与会人，
           保留其他非 resource 与会人，避免把他们一起冲掉。
@@ -266,22 +276,30 @@ class OutlookCalendarService:
             patch["start"] = _graph_datetime(start_dt, get_tz())
         if end_dt is not None:
             patch["end"] = _graph_datetime(end_dt, get_tz())
-        room_address = None
-        if room is not None:
-            room_address = expand_room(room) if room.strip() else None
+        room_changed = room is not None
+        room_address = expand_room(room) if room_changed and room.strip() else None
+        # 先校验邮箱格式再读事件：参数写错时不做任何网络请求
+        add_people = clean_addresses(attendees)
+        drop_people = clean_addresses(remove_attendees)
+        if room_changed or add_people or drop_people:
             source = (
                 existing_attendees
                 if existing_attendees is not None
                 else _attendee_list(self._get_raw_event(event_id).get("attendees"))
             )
-            attendees = [
-                _graph_attendee(attendee)
-                for attendee in source
-                if (attendee.get("type") or "").lower() != "resource"
+            people, rooms = split_people(source)
+            invites = [
+                _graph_attendee(entry)
+                for entry in merge_attendees(people, add=add_people, remove=drop_people)
             ]
-            if room_address:
-                attendees.append(_room_attendee(room_address))
-            patch["attendees"] = attendees
+            if room_changed:
+                # 改会议室：旧的 resource 条目丢掉，按新会议室重新发出邀请
+                if room_address:
+                    invites.append(_room_attendee(room_address))
+            else:
+                # 只增减普通与会人：保留已有会议室条目，避免把已订的会议室一起冲掉
+                invites.extend(_graph_attendee(entry) for entry in rooms)
+            patch["attendees"] = invites
         if location is not None:
             entry = {"displayName": location}
             if room_address and location:
@@ -297,7 +315,7 @@ class OutlookCalendarService:
         if not patch:
             raise ValueError(
                 "至少提供一项要修改的字段"
-                "（title/start/end/location/description/room）"
+                "（title/start/end/location/description/room/attendees）"
             )
 
         try:
@@ -481,22 +499,15 @@ def _graph_datetime(dt: datetime, tz) -> dict:
 
 
 def _person_attendees(addresses: list[str] | None) -> list[dict]:
-    """把与会人邮箱列表转成 required（必须参加）类型的 Graph 与会人条目。
+    """把与会人列表转成 required（必须参加）类型的 Graph 与会人条目。
 
-    空值忽略；缺少 @ 的条目直接报错，避免邀请被静默丢弃。
+    每一项可以是邮箱，也可以是通讯录里的姓名（见 src/contacts.py）；
+    空值忽略，解析不了的直接报错，避免邀请被静默丢弃。
     """
-    result: list[dict] = []
-    for raw in addresses or []:
-        address = (raw or "").strip()
-        if not address:
-            continue
-        if "@" not in address:
-            raise ValueError(f"与会人邮箱格式不正确: {raw!r}")
-        result.append({
-            "type": "required",
-            "emailAddress": {"address": address},
-        })
-    return result
+    return [
+        {"type": "required", "emailAddress": {"address": address}}
+        for address in clean_addresses(addresses)
+    ]
 
 
 def _room_attendee(address: str) -> dict:

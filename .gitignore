@@ -5,6 +5,9 @@ credentials/*
 # 本机配置
 .env
 
+# 临时脚本与中间产物（不提交；如 tmp/ 下的会议人扫描结果与批量脚本）
+tmp/
+
 # venv bootstrap 临时目录（沙箱环境产物，可安全删除）
 .tmp-bootstrap/
 .tmp-pip/

@@ -148,6 +148,95 @@ class UpdateEventTests(unittest.TestCase):
         self.assertIn("400", str(ctx.exception))
 
 
+class UpdateAttendeesTests(unittest.TestCase):
+    """邀请 / 移除与会人：只动普通与会人，会议室条目按 --room 语义处理。"""
+
+    def setUp(self):
+        self.service = OutlookCalendarService()
+
+    def _update(self, existing=None, raw=None, **kwargs):
+        """执行 update_event，返回 (patch 请求的 json body, patch mock, get mock)。"""
+        with mock.patch("src.outlook_service._headers",
+                        return_value={"Authorization": "Bearer t"}), \
+             mock.patch("src.outlook_service.requests.patch") as patch_req, \
+             mock.patch("src.outlook_service.requests.get") as get:
+            patch_req.return_value.status_code = 200
+            patch_req.return_value.json.return_value = _graph_event()
+            if raw is not None:
+                get.return_value.status_code = 200
+                get.return_value.json.return_value = raw
+            self.service.update_event(EVENT_ID, existing_attendees=existing, **kwargs)
+        return patch_req.call_args.kwargs["json"], patch_req, get
+
+    def test_add_attendee_keeps_existing_people_and_room(self):
+        existing = [
+            {"type": "required", "address": "guest@arraycomm.com", "name": "Guest",
+             "response": "accepted"},
+            {"type": "resource", "address": expand_room("801"),
+             "name": "CDConfRoom801", "response": "accepted"},
+        ]
+        body, _, get = self._update(existing, attendees=["Emma.Zhou@arraycomm.com"])
+        get.assert_not_called()  # 复用 get_event 已取回的与会人
+        self.assertEqual(body["attendees"], [
+            {"type": "required",
+             "emailAddress": {"address": "guest@arraycomm.com", "name": "Guest"}},
+            {"type": "required",
+             "emailAddress": {"address": "Emma.Zhou@arraycomm.com"}},
+            {"type": "resource",
+             "emailAddress": {"address": expand_room("801"),
+                              "name": "CDConfRoom801"}},
+        ])
+        self.assertNotIn("subject", body)  # 没给字段就不提交
+
+    def test_add_attendee_without_cached_attendees_reads_event(self):
+        raw = _graph_event()
+        raw["attendees"] = [
+            {"type": "required",
+             "emailAddress": {"address": "guest@arraycomm.com", "name": "Guest"}},
+        ]
+        body, _, get = self._update(None, raw=raw, attendees=["new@arraycomm.com"])
+        get.assert_called_once()
+        self.assertEqual([entry["emailAddress"]["address"] for entry in body["attendees"]],
+                         ["guest@arraycomm.com", "new@arraycomm.com"])
+
+    def test_remove_attendee_drops_only_target(self):
+        existing = [
+            {"type": "required", "address": "guest@arraycomm.com", "name": "Guest"},
+            {"type": "required", "address": "keep@arraycomm.com", "name": "Keep"},
+        ]
+        body, _, _ = self._update(existing, remove_attendees=["GUEST@arraycomm.com"])
+        self.assertEqual([entry["emailAddress"]["address"] for entry in body["attendees"]],
+                         ["keep@arraycomm.com"])
+
+    def test_duplicate_invite_is_not_added_twice(self):
+        existing = [{"type": "required", "address": "emma.zhou@arraycomm.com"}]
+        body, _, _ = self._update(existing, attendees=["Emma.Zhou@arraycomm.com"])
+        self.assertEqual(len(body["attendees"]), 1)
+
+    def test_room_change_replaces_resource_and_keeps_new_people(self):
+        existing = [
+            {"type": "resource", "address": expand_room("801"),
+             "name": "CDConfRoom801", "response": "accepted"},
+        ]
+        body, _, _ = self._update(existing, room="803",
+                                  attendees=["new@arraycomm.com"])
+        self.assertEqual(body["attendees"], [
+            {"type": "required", "emailAddress": {"address": "new@arraycomm.com"}},
+            {"type": "resource",
+             "emailAddress": {"address": expand_room("803"),
+                              "name": "CDConfRoom803"}},
+        ])
+        self.assertEqual(body["location"]["displayName"], "CDConfRoom803")
+
+    def test_invalid_attendee_email_raises_before_reading_event(self):
+        with mock.patch("src.outlook_service._headers",
+                        return_value={"Authorization": "Bearer t"}), \
+             mock.patch("src.outlook_service.requests.get") as get:
+            with self.assertRaises(ValueError):
+                self.service.update_event(EVENT_ID, attendees=["not-an-email"])
+        get.assert_not_called()
+
+
 class DeleteEventTests(unittest.TestCase):
     def test_delete_success_204(self):
         service = OutlookCalendarService()

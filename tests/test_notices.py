@@ -16,6 +16,7 @@ from src.config import CALENDAR_TIMEZONE, ROOM_EMAIL_DOMAIN, ROOM_NAME_PREFIX
 from src.notices import (
     event_line,
     format_range,
+    print_attendees,
     print_candidates,
     print_conflict_notice,
     print_no_match,
@@ -146,6 +147,31 @@ class RoomNoticeTests(unittest.TestCase):
         text, response = _capture(print_room_notice, _event(title="没带会议室"), ROOM_801)
         self.assertIsNone(response)
         self.assertIn("尚未响应", text)
+
+
+class AttendeeReportTests(unittest.TestCase):
+    def _event_with_people(self):
+        ev = _event(title="AI 工具汇报")
+        ev["attendees"] = [
+            {"type": "required", "address": "emma.zhou@arraycomm.com",
+             "name": "Emma Zhou", "response": "accepted"},
+            {"type": "required", "address": "nzhou@arraycomm.com",
+             "name": "Nanqing Zhou", "response": "none"},
+            {"type": "resource", "address": ROOM_801,
+             "name": ROOM_NAME_PREFIX + "801", "response": "accepted"},
+        ]
+        return ev
+
+    def test_lists_people_with_response_but_not_room(self):
+        text, _ = _capture(print_attendees, self._event_with_people())
+        self.assertIn("Emma Zhou <emma.zhou@arraycomm.com>（accepted）", text)
+        self.assertIn("Nanqing Zhou <nzhou@arraycomm.com>", text)
+        self.assertNotIn("（none）", text)
+        self.assertNotIn(ROOM_801, text)
+
+    def test_no_people_prints_nothing(self):
+        text, _ = _capture(print_attendees, _event())
+        self.assertEqual(text, "")
 
 
 class CandidateReportTests(unittest.TestCase):

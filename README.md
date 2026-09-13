@@ -18,6 +18,8 @@
 | 事件搜索 `search_events` | 已实现（时间范围 + 关键词确定性匹配） |
 | 会议室查询 `list_rooms` | 已实现（仅 Outlook 后端；中国区 Graph 无会议室清单接口，按邮箱命名规律扫描） |
 | 会议室预订 | 已实现（`create_event --room` / `update_event --room`，会议室以 resource 与会人写入事件） |
+| 邀请与会人 | 已实现（`create_event --attendee` / `update_event --attendee` / `--remove-attendee`，required 类型邀请） |
+| 通讯录（姓名 → 邮箱） | 已实现（`data/contacts.csv` 唯一事实源；`scripts/contacts.py` 查询；邀请时 `--attendee 姓名` 自动解析，查不到 / 命中多个都会停下） |
 
 修改 / 删除改为**一条命令完成定位与写入**：`--query 关键词` 配 `--date`（或 `--from`/`--to`）由脚本自己读日历过滤，**恰好 1 个命中即执行**；0 命中或 ≥2 个候选会停下（退出码 4）列出候选或报告没找到，由你指定是哪一个。写操作不做事前冲突 / 忙闲预检（每次预检都是一次额外往返），改为写完后读一次目标时段做**事后提醒**（`--no-notice` 可跳过）；`--dry-run` 只看不改，`--yes` 保留为兼容空参数。
 
@@ -175,6 +177,41 @@ OUTLOOK_TENANT_ID=organizations
 - 会议室是否自动接受邀请取决于 Exchange 会议室策略；脚本负责发出邀请，若房间配置为冲突自动拒绝，邀请会被拒。
 - 本租户实测：会议室**自动接受**邀请（事件与会人 status.response = accepted，约 1 秒内完成）。但**跨邮箱忙闲缓存有延迟**——刚预订完的几分钟内，`getSchedule` / `list_rooms` 可能仍把该会议室显示为空闲，判断预订结果请以事件里会议室与会人的响应状态为准。
 
+## 与会人（会议邀请）
+
+与会人和会议室是同一个 attendees 数组：普通与会人（required / optional）+ 会议室（resource）。`--attendee` / `--remove-attendee` 只增删普通与会人，不会碰已订的会议室；只有显式给 `--room` 才会替换会议室条目。
+
+```powershell
+./.venv/Scripts/python.exe scripts/create_event.py --title "投资人访谈" --start 2026-09-15T10:00 --duration 60 --attendee nzhou@arraycomm.com
+./.venv/Scripts/python.exe scripts/update_event.py --event-id <id> --attendee emma.zhou@arraycomm.com --attendee qzhang@arraycomm.com
+./.venv/Scripts/python.exe scripts/update_event.py --event-id <id> --remove-attendee emma.zhou@arraycomm.com
+
+# 直接写姓名更省事：走通讯录 data/contacts.csv 解析，结果与写邮箱等价
+./.venv/Scripts/python.exe scripts/update_event.py --event-id <id> --attendee "Nanqing Zhou" --attendee "Xu Yang"
+./.venv/Scripts/python.exe scripts/contacts.py --name "Nanqing Zhou"   # 先查地址
+./.venv/Scripts/python.exe scripts/contacts.py --query zhou            # 模糊找
+```
+
+- `--attendee` 可重复传入，类型为 required（必须参加）；邮箱缺 `@` 在发请求前直接报错，重复邀请按地址去重（大小写不敏感）。
+- 写 attendees 时 Graph 按新数组整体覆盖，已有与会人会被重新提交（响应状态可能重置），这是 Exchange 的语义。
+- 邀请结果看事件里各与会人的响应状态（`accepted` / `declined` / `none`，刚发出时均为 `none`）；`update_event.py` 写完会把与会人连同响应状态打印出来。
+- 邮箱地址走通讯录 `data/contacts.csv`：解析只做确定性匹配（姓名 / 别名 / 完整邮箱 / 邮箱本地部分，忽略大小写与空白），查不到或命中多个都报错停下，不会猜一个地址。中国区 Graph 没有可用的通讯录搜索（`/me/people` 的 `$search` 实测返回 400）；新联系人可从历史日程的与会人里按姓名查找，或向用户确认后补进 CSV。
+
+### 通讯录（data/contacts.csv）
+
+姓名 → 邮箱的本地通讯录，邀请时不用每次重查地址。文件是唯一事实源，列为 `name,address,aliases,note`（UTF-8；`aliases` 用 `;` 分隔多个写法；外部联系人 `note` 写「外部: 域名」）。初始 196 条来自历史日历（2025-09 ~ 2026-09）的与会人扫描：132 个内部地址 + 64 个外部地址，已排除会议室邮箱。
+
+```powershell
+./.venv/Scripts/python.exe scripts/contacts.py --list                # 全部条目
+./.venv/Scripts/python.exe scripts/contacts.py --list --external     # 只看外部联系人
+./.venv/Scripts/python.exe scripts/contacts.py --name "Emma Zhou"    # 精确解析（查不到 / 命中多个 → 退出码 4）
+./.venv/Scripts/python.exe scripts/contacts.py --query zhou --json   # 模糊查，JSON 输出
+```
+
+- 解析顺序：姓名 / 别名 / 完整邮箱 / 邮箱本地部分，比较时忽略大小写与空白——`Nanqing Zhou`、`nanqingzhou`、`nzhou` 都能命中 `nzhou@arraycomm.com`；含 `@` 的输入按邮箱原样使用。
+- 解析在发请求前完成，**查不到或命中多个都停下报错**（邀请时退出码 2，查询时退出码 4），不会把邀请静默丢弃，也不会猜地址。
+- 补充 / 修正：直接编辑 `data/contacts.csv`，把别的写法（英文名、中文名、拼音）填进 `aliases` 列即可，不需要改代码。
+
 ## Google Calendar（过渡期保留）
 
 Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src/calendar_service.py`，Outlook 验证通过后将删除。如需临时切回：在 `.env` 中设置 `CALENDAR_PROVIDER=google`，并按原流程配置（Google Cloud 项目 → 启用 Calendar API → OAuth consent screen（External + Testing，邮箱加入 Test users）→ 创建 Desktop app 类型的 OAuth client ID → JSON 保存为 `credentials/credentials.json`）。
@@ -202,6 +239,11 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 
 # 搜索日程（只查不改；--query 定位已并入 update / delete）
 ./.venv/Scripts/python.exe scripts/search_events.py --date 2026-09-14 --query 雅江
+
+# 通讯录（姓名 → 邮箱；邀请时可直接 --attendee "姓名"）
+./.venv/Scripts/python.exe scripts/contacts.py --query nanqing
+./.venv/Scripts/python.exe scripts/contacts.py --name "Nanqing Zhou"
+./.venv/Scripts/python.exe scripts/contacts.py --list --external
 
 # 修改日程（默认直接执行；--query 一条命令定位并改）
 ./.venv/Scripts/python.exe scripts/update_event.py --query 壁仞 --date tomorrow --start 2026-09-14T16:00 --duration 60
@@ -244,6 +286,8 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 ├── .gitignore
 ├── credentials/              # OAuth 凭证与 token（不提交 Git）
 │   └── README.md
+├── data/
+│   └── contacts.csv          # 通讯录（姓名/邮箱/别名/备注，来自历史日历与会人扫描）
 ├── src/
 │   ├── config.py             # 配置：后端、时区、路径、账号 ID
 │   ├── service_factory.py    # 按 CALENDAR_PROVIDER 选择后端
@@ -255,6 +299,8 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 │   ├── conflicts.py          # 冲突检测纯算法（后端无关）
 │   ├── event_match.py        # 事件关键词匹配（后端无关）
 │   ├── targets.py            # 关键词定位唯一目标（--query 一次调用，0/多命中停下）
+│   ├── attendees.py          # 与会人增删纯函数（校验 / 去重 / 显示）
+│   ├── contacts.py           # 通讯录：姓名 → 邮箱（确定性解析，查不到就报错）
 │   ├── notices.py            # 写操作后的事后提醒（冲突、会议室响应状态）
 │   ├── google_auth.py        # Google OAuth（过渡期保留）
 │   ├── calendar_service.py   # Google Calendar 封装（过渡期保留）
@@ -267,6 +313,7 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 │   ├── update_event.py       # 修改日程（默认执行，--dry-run 预览）
 │   ├── delete_event.py       # 删除日程（默认执行，--dry-run 预览）
 │   ├── list_rooms.py         # 会议室清单与占用
+│   ├── contacts.py           # 通讯录查询（姓名 ↔ 邮箱）
 │   └── register_outlook_app.py # 应用注册引导（门户被租户限制时的一次性工具）
 └── tests/
     ├── test_datetime_utils.py
@@ -275,6 +322,8 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
     ├── test_conflicts.py
     ├── test_event_match.py
     ├── test_update_delete.py
+    ├── test_attendees.py
+    ├── test_contacts.py
     ├── test_targets.py
     ├── test_notices.py
     ├── test_ics_parsing.py
@@ -299,4 +348,6 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 - **当前建议：真实使用一到两周**，记录不顺手的细节（"下午"的边界、默认时长、默认提醒等），作为下一阶段的输入
 - Session 4：会议室（CDConfRoom）查询与预订：`scripts/list_rooms.py` + `create_event --room` / `update_event --room`（已完成）
 - Session 5：流程提速（已完成）：`--query` 一次调用定位并执行、默认执行（`--dry-run` 预览）、冲突与会议室忙闲改为事后提醒
-- 之后候选：`create_event` 支持与会人（自动发会议邀请）、`find_free_time` 区分 showAs 空闲状态、清理 Google / ICS 备用后端
+- Session 6：与会人邀请（已完成）：`create_event --attendee` / `update_event --attendee` / `--remove-attendee`（`src/attendees.py`）
+- Session 7：通讯录（已完成）：`data/contacts.csv`（姓名 ↔ 邮箱）+ `src/contacts.py` + `scripts/contacts.py`；`--attendee 姓名` 直接解析，查不到 / 命中多个都停下
+- 之后候选：`find_free_time` 区分 showAs 空闲状态、清理 Google / ICS 备用后端
