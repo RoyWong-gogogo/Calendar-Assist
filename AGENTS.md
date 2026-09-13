@@ -65,13 +65,14 @@ python scripts/list_events.py --json               # JSON 输出（便于程序�
 python scripts/create_event.py --title "和王总开会" --start 2026-09-14T15:00 --duration 60
 python scripts/find_free_time.py --from 2026-09-14T09:00 --to 2026-09-14T18:00 --duration 60
 python scripts/search_events.py --date 2026-09-14 --query 雅江
-python scripts/update_event.py --event-id <id> --start 2026-09-14T16:00 --duration 60          # 预览
-python scripts/update_event.py --event-id <id> --start 2026-09-14T16:00 --duration 60 --yes    # 执行
+python scripts/update_event.py --query 壁仞 --date tomorrow --start 2026-09-14T16:00 --duration 60  # 一条命令定位并改
+python scripts/update_event.py --event-id <id> --start 2026-09-14T16:00 --duration 60             # 直接执行
+python scripts/update_event.py --event-id <id> --start 2026-09-14T16:00 --duration 60 --dry-run   # 只看不改
 python scripts/create_event.py --title "投资人访谈" --start 2026-09-15T10:00 --duration 60 --room 801
 python scripts/list_rooms.py --date 2026-09-15     # 会议室清单与占用（扫描编号 800-850）
-python scripts/update_event.py --event-id <id> --room 803 --yes    # 改会议室（--room "" 取消）
-python scripts/delete_event.py --event-id <id>          # 预览
-python scripts/delete_event.py --event-id <id> --yes    # 执行
+python scripts/update_event.py --event-id <id> --room 803             # 改会议室（--room "" 取消）
+python scripts/delete_event.py --event-id <id>                        # 直接删除
+python scripts/delete_event.py --query 客户会议 --date tomorrow       # 一条命令定位并删
 python -m unittest discover -s tests -v            # 运行测试
 ```
 
@@ -79,32 +80,31 @@ python -m unittest discover -s tests -v            # 运行测试
 
 当用户说“我明天下午有什么安排”时：先把“明天下午”换算成准确的时间范围，然后调用 `scripts/list_events.py`（或 `service_factory.get_calendar_service_class()`）实际读取日历，最后用简洁的自然语言汇报结果。禁止凭上下文猜测日历内容。
 
-当用户说“明天下午 3 点和王总开会一个小时”时：先换算成明确时间，必要时先查询该时段是否已有安排，然后调用 `scripts/create_event.py` 写入日历，并汇报创建结果（id、时间、标题）。
+当用户说“明天下午 3 点和王总开会一个小时”时：先换算成明确时间，直接调用 `scripts/create_event.py` 写入日历（**默认不带 `--room`，不预订会议室**，除非用户明确要求），并汇报创建结果（id、时间、标题）。脚本在创建后会做一次事后提醒（该时段是否已有其它日程），把它一并汇报给用户。
 
 当用户说“下周三下午帮我找一个小时空档”时：先换算时间范围，调用 `scripts/find_free_time.py`，把可选时段用自然语言汇报，让用户挑选。
 
-## 修改与删除日程的规则（安全机制）
+## 修改与删除日程的规则
 
-当用户说“把明天下午和壁仞的会议改到四点”或“取消周五那个客户会议”时，**不得直接操作**，必须走：
+设计目标：**一条命令改完**。真实使用中的延迟主要来自「搜索 → 预览 → 确认 → 执行」四步，已按此简化。当用户说“把明天下午和壁仞的会议改到四点”或“取消周五那个客户会议”时：
 
-1. 根据用户描述换算搜索时间范围（宁大勿小，如“明天下午”= 明天 12:00–18:00）
-2. 调用 `scripts/search_events.py` **实际读取日历**并按关键词过滤候选
-3. 没有匹配：明确告知没找到，不得构造 event id，也不得创建新事件顶替修改
-4. 多个候选：**列出候选让用户选择，禁止猜测**
-5. 唯一匹配：向用户展示目标（原日程 → 新日程 / 待删除日程）并确认
-6. 用户确认后：先跑**不带 --yes 的预览**看冲突提示，再带 `--yes` 执行
-7. 操作必须通过真实 event id；禁止仅凭标题删除或修改
+1. **定位与写入合并成一条命令**：`--query 关键词` 配合 `--date` / `--from`+`--to`（宁大勿小，如“明天下午”= 明天 12:00–18:00），例如 `python scripts/update_event.py --query 壁仞 --date tomorrow --start 2026-09-14T16:00 --duration 60`；删除同理 `python scripts/delete_event.py --query 客户会议 --date tomorrow`。脚本自己读日历并按关键词过滤（见 `src/targets.py`）。
+2. **恰好 1 个命中即视为已授权，直接执行**：默认就写，没有确认步骤（`--dry-run` 才是预览）。用户的明确指令 + 唯一命中就是授权。
+3. **0 命中或 ≥2 个候选才停下**（退出码 4）：脚本会列出候选（含 event id）或明确说“没找到”。此时把结果转述给用户，让用户指定是哪一个或换关键词；**禁止猜测**，不得构造 event id，也不得创建新事件顶替修改。
 
-**冲突检查**：`update_event.py` 在时间变化时自动查询新时段的已有日程（排除自身 event id）并显示冲突；存在冲突时明确告知用户冲突事件，由用户决定是否仍加 `--yes` 继续。`create_event` 目前不做自动冲突检查，Codex 在创建前应先查询目标时段（发现冲突时提醒用户，是否创建由用户决定）。
+底线不变：操作必须落在真实 event id 上；走 `--event-id`（沿用上次汇报里的 id）时同样默认直接执行。`search_events.py` 保留用于只查不改的搜索，`--yes` 保留为兼容空参数，不再影响行为。
 
-**重复日程**：遇到重复日程（instance / series master）时，修改和删除前必须向用户说明影响范围（“仅这一场”或“整个系列”），语义不明确时先让用户选择，不得因实现方便而擅自操作整个系列。脚本会对重复日程打印 ⚠️ 提示。
+**冲突改为事后提醒**：`update_event.py` / `create_event.py` 都不做事前冲突预检，写完读一次目标时段，把重叠的其它日程打印成 `[事后提醒]`。汇报时先给结果，再把提醒转述给用户（该时段还有哪些日程）；是否再调整由用户决定，写操作不因冲突阻塞。提醒读取失败不改退出码（写操作已成功）；`--no-notice` 可跳过这次读取。
+
+**重复日程**：遇到重复日程（instance / series master）时，修改和删除前必须向用户说明影响范围（“仅这一场”或“整个系列”），语义不明确时先让用户选择，不得因实现方便而擅自操作整个系列。脚本会对重复日程打印 ⚠️ 提示；`--query` 命中的若是系列母事件，脚本会停下（退出码 4）并要求改用 `--event-id` 明确指定。
 
 ## 会议室（CDConfRoom）
 
+- **默认不预订会议室**：用户没有明确要求会议室时，创建 / 修改日程一律**不带 `--room`**；只有用户明确说要订会议室（给出编号，或授权你挑选）时才预订。拿不准就先问，不要默认占房。
 - 会议室是 Exchange **room mailbox**（资源邮箱，`CDConfRoomNNN@arraycomm.com`），和“地点文本”不是一回事：只有把会议室作为 **resource 与会人** 写入事件（`--room`）才算真正预订；只写 `--location` 只是标签，不会占用会议室。
 - 中国区 Graph 没有可用的会议室清单接口（`/me/findRooms` 缺委托权限返回 403、`/places` 返回 403、`/me/findMeetingTimes` 返回 405，2026-09 实测），因此用 `scripts/list_rooms.py` 按「前缀 + 编号 @ 域名」扫描编号区间，并用 `getSchedule` 确认邮箱是否存在、忙闲如何。前缀 / 域名见 `src/config.py` 的 `ROOM_NAME_PREFIX` / `ROOM_EMAIL_DOMAIN`。
-- 预订前必须先查会议室忙闲（脚本已内置）：会议室在目标时段被占用时，`create_event --room` 会打印 `[会议室占用]` 并**停止创建**（退出码 3；只有用户确认强行创建才加 `--force-room`）；`update_event --room` 会在预览里打印 ⚠️ 并停止（退出码 3；用户确认才加 `--yes`）。
-- 改 / 取消会议室同样走 search → 匹配 → 展示 → 确认 → `update_event --room`（`--room ""` 取消）；会议室是否自动接受邀请由 Exchange 策略决定，脚本只负责发出邀请。
+- **预订不做事前忙闲预检**（每次 `getSchedule` 都要一次额外往返，且跨邮箱忙闲缓存本身有延迟、不可靠）：`create_event --room` / `update_event --room` 直接发出邀请，**以写完后事件里该会议室与会人的 `status.response` 判定结果**——`accepted` 已订上；`none` / 未响应则稍后再确认；`declined` 说明房间拒绝（被占用或不可预订），需换一间。给用户挑会议室时仍用 `scripts/list_rooms.py`（一次扫描整个区间，比逐间预检划算）。`--force-room` / `--yes` 保留为兼容空参数，不再影响行为。
+- 改 / 取消会议室同样走 `--query` / `--event-id` + `update_event --room`（`--room ""` 取消）；会议室是否自动接受邀请由 Exchange 策略决定，脚本只负责发出邀请。
 - 本租户实测：会议室会自动接受邀请（事件与会人 `status.response = accepted`）；但**跨邮箱忙闲缓存有延迟**，刚订完的几分钟内 `list_rooms` / `getSchedule` 可能仍显示该会议室空闲——判断是否订上要看事件的会议室与会人响应状态，不要仅凭忙闲视图下结论。
 
 ## 执行约定（Codex 自用）
@@ -113,3 +113,4 @@ python -m unittest discover -s tests -v            # 运行测试
 - **不做无结论价值的等待**：已有权威信号时不要 sleep 轮询次要信号（例：会议室忙闲缓存有延迟，但与会人 `accepted` 已是最终答案），避免让用户对着空屏等。
 - **收尾从简**：动作完成 + 一次必要回读即可，不再追加可做可不做的检查（提交后的重复 `git status`、被删事件后的再确认等）。
 - **汇报顺序**：先给结果，再简述过程与限制；总结保持短，长分析只放在用户明确追问时。
+- **日历脚本要联网**：本机沙箱默认拦截网络，日历脚本访问 Graph 需要升级授权——直接在升级请求里执行（或按已登记的 prefix rule 运行），不要为了省授权去改代码或换数据源。

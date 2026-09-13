@@ -13,7 +13,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.config import CALENDAR_TIMEZONE
 from src.ics_service import IcsCalendarService, IcsError
-from src.outlook_service import OutlookApiError, OutlookCalendarService
+from src.outlook_service import (
+    OutlookApiError,
+    OutlookCalendarService,
+    _to_event_dict,
+)
+from src.rooms import expand_room
 
 TZ = ZoneInfo(CALENDAR_TIMEZONE)
 EVENT_ID = "AAMk-test-id-123"
@@ -32,6 +37,13 @@ def _graph_event():
 
 
 class GetEventTests(unittest.TestCase):
+    def setUp(self):
+        # 必须连 _headers 一起 mock：否则会真的去 MSAL 取 token（依赖网络与凭证缓存）
+        patcher = mock.patch("src.outlook_service._headers",
+                             return_value={"Authorization": "Bearer t"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_get_event_success(self):
         service = OutlookCalendarService()
         with mock.patch("src.outlook_service.requests.get") as get:
@@ -180,6 +192,54 @@ class ReadOnlyBackendsRejectWrites(unittest.TestCase):
                      lambda: service.delete_event("x")):
             with self.assertRaises(IcsError):
                 call()
+
+
+class AttendeeMappingTests(unittest.TestCase):
+    def test_attendees_and_room_responses_exposed(self):
+        data = _graph_event()
+        data["attendees"] = [
+            {"type": "required",
+             "emailAddress": {"address": "guest@arraycomm.com", "name": "Guest"},
+             "status": {"response": "none", "time": "0001-01-01T00:00:00Z"}},
+            {"type": "resource",
+             "emailAddress": {"address": expand_room("801"), "name": "CDConfRoom801"},
+             "status": {"response": "accepted", "time": "2026-09-14T09:00:00Z"}},
+        ]
+        ev = _to_event_dict(data)
+        self.assertEqual(ev["rooms"], [expand_room("801")])
+        self.assertEqual(ev["room_responses"][0]["response"], "accepted")
+        self.assertEqual([a["type"] for a in ev["attendees"]], ["required", "resource"])
+        self.assertEqual(ev["attendees"][0]["response"], "none")
+
+    def test_no_attendees_key_yields_empty_lists(self):
+        ev = _to_event_dict(_graph_event())
+        self.assertEqual(ev["rooms"], [])
+        self.assertEqual(ev["room_responses"], [])
+        self.assertEqual(ev["attendees"], [])
+
+    def test_update_room_reuses_provided_attendees(self):
+        service = OutlookCalendarService()
+        provided = [
+            {"type": "required", "address": "guest@arraycomm.com", "name": "Guest",
+             "response": "none"},
+            {"type": "resource", "address": expand_room("808"), "name": "CDConfRoom808",
+             "response": "accepted"},
+        ]
+        with mock.patch("src.outlook_service._headers",
+                        return_value={"Authorization": "Bearer t"}), \
+             mock.patch("src.outlook_service.requests.patch") as patch_req, \
+             mock.patch("src.outlook_service.requests.get") as get:
+            patch_req.return_value.status_code = 200
+            patch_req.return_value.json.return_value = _graph_event()
+            service.update_event(EVENT_ID, room="801", existing_attendees=provided)
+        get.assert_not_called()  # 复用了 get_event 已取回的与会人，不再多发一次读取
+        body = patch_req.call_args.kwargs["json"]
+        self.assertEqual(body["attendees"], [
+            {"type": "required",
+             "emailAddress": {"address": "guest@arraycomm.com", "name": "Guest"}},
+            {"type": "resource",
+             "emailAddress": {"address": expand_room("801"), "name": "CDConfRoom801"}},
+        ])
 
 
 if __name__ == "__main__":

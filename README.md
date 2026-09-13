@@ -13,13 +13,13 @@
 | 查询日程 `list_events` | 已实现（ICS / Outlook / Google 多后端） |
 | 创建日程 `create_event` | 已实现（Outlook 后端；ICS 只读 / Google 不可用，调用会明确报错） |
 | 查询空闲时间 `find_free_time` | 已实现（全部后端；v0.1 将日历上所有事件视为忙碌） |
-| 修改日程 `update_event` | 已实现（Outlook 后端；预览 + 冲突检查 + --yes 确认） |
-| 删除日程 `delete_event` | 已实现（Outlook 后端；预览 + --yes 确认） |
+| 修改日程 `update_event` | 已实现（Outlook 后端；默认执行，`--dry-run` 预览，写后事后提醒） |
+| 删除日程 `delete_event` | 已实现（Outlook 后端；默认执行，`--dry-run` 预览） |
 | 事件搜索 `search_events` | 已实现（时间范围 + 关键词确定性匹配） |
 | 会议室查询 `list_rooms` | 已实现（仅 Outlook 后端；中国区 Graph 无会议室清单接口，按邮箱命名规律扫描） |
 | 会议室预订 | 已实现（`create_event --room` / `update_event --room`，会议室以 resource 与会人写入事件） |
 
-修改 / 删除走安全流程：搜索 → 匹配候选（多个时人工选择）→ 展示目标 → 预览（含冲突提示）→ `--yes` 确认 → 按 event id 执行。
+修改 / 删除改为**一条命令完成定位与写入**：`--query 关键词` 配 `--date`（或 `--from`/`--to`）由脚本自己读日历过滤，**恰好 1 个命中即执行**；0 命中或 ≥2 个候选会停下（退出码 4）列出候选或报告没找到，由你指定是哪一个。写操作不做事前冲突 / 忙闲预检（每次预检都是一次额外往返），改为写完后读一次目标时段做**事后提醒**（`--no-notice` 可跳过）；`--dry-run` 只看不改，`--yes` 保留为兼容空参数。
 
 ## 环境要求
 
@@ -165,11 +165,11 @@ OUTLOOK_TENANT_ID=organizations
 
 # 预订 / 更换 / 取消会议室
 ./.venv/Scripts/python.exe scripts/create_event.py --title "投资人访谈" --start 2026-09-15T10:00 --duration 60 --room 801
-./.venv/Scripts/python.exe scripts/update_event.py --event-id <id> --room 803 --yes
-./.venv/Scripts/python.exe scripts/update_event.py --event-id <id> --room "" --yes
+./.venv/Scripts/python.exe scripts/update_event.py --event-id <id> --room 803
+./.venv/Scripts/python.exe scripts/update_event.py --event-id <id> --room ""
 ```
 
-- `--room` 接受编号（`801`）、名称（`CDConfRoom801`）或完整邮箱；预订前脚本会用 `getSchedule` 检查忙闲，被占用时**停止操作**并给出提示（退出码 3；`create_event` 加 `--force-room` 可强制创建，`update_event` 加 `--yes` 可继续）。
+- `--room` 接受编号（`801`）、名称（`CDConfRoom801`）或完整邮箱；预订不做事前忙闲预检，直接发出邀请，结果看事件里该会议室与会人的响应状态——`accepted` = 已订上，`declined` = 房间拒绝该时段（需换一间），`none` = 尚未响应（稍后查事件确认）。要挑房间时先跑 `list_rooms.py` 看忙闲。
 - 前缀与域名可用 `.env` 的 `ROOM_NAME_PREFIX` / `ROOM_EMAIL_DOMAIN` 覆盖，扫描区间用 `--first` / `--last`。
 - 本租户实测存在的会议室：`CDConfRoom801` `802` `803` `804` `805` `808`（600 / 700 / 900 编号段均无房间）。
 - 会议室是否自动接受邀请取决于 Exchange 会议室策略；脚本负责发出邀请，若房间配置为冲突自动拒绝，邀请会被拒。
@@ -200,14 +200,18 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 # 查找空闲时间（返回所有可容纳该时长的连续区间）
 ./.venv/Scripts/python.exe scripts/find_free_time.py --from 2026-09-14T09:00 --to 2026-09-14T18:00 --duration 60
 
-# 搜索日程（修改/删除第一步：拿真实 event id）
+# 搜索日程（只查不改；--query 定位已并入 update / delete）
 ./.venv/Scripts/python.exe scripts/search_events.py --date 2026-09-14 --query 雅江
 
-# 修改日程（默认预览原→新并做冲突检查，--yes 才执行）
-./.venv/Scripts/python.exe scripts/update_event.py --event-id <id> --start 2026-09-14T16:00 --duration 60 --yes
+# 修改日程（默认直接执行；--query 一条命令定位并改）
+./.venv/Scripts/python.exe scripts/update_event.py --query 壁仞 --date tomorrow --start 2026-09-14T16:00 --duration 60
+./.venv/Scripts/python.exe scripts/update_event.py --event-id <id> --start 2026-09-14T16:00 --duration 60          # 已有 id 时
+./.venv/Scripts/python.exe scripts/update_event.py --event-id <id> --start 2026-09-14T16:00 --duration 60 --dry-run # 只看不改
 
-# 删除日程（默认预览目标，--yes 才执行）
-./.venv/Scripts/python.exe scripts/delete_event.py --event-id <id> --yes
+# 删除日程（默认直接执行；--query 一条命令定位并删）
+./.venv/Scripts/python.exe scripts/delete_event.py --query 客户会议 --date tomorrow
+./.venv/Scripts/python.exe scripts/delete_event.py --event-id <id>                 # 已有 id 时
+./.venv/Scripts/python.exe scripts/delete_event.py --event-id <id> --dry-run       # 只看不删
 ```
 
 ## 配置
@@ -250,6 +254,8 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 │   ├── free_time.py          # 空闲时间纯算法（后端无关）
 │   ├── conflicts.py          # 冲突检测纯算法（后端无关）
 │   ├── event_match.py        # 事件关键词匹配（后端无关）
+│   ├── targets.py            # 关键词定位唯一目标（--query 一次调用，0/多命中停下）
+│   ├── notices.py            # 写操作后的事后提醒（冲突、会议室响应状态）
 │   ├── google_auth.py        # Google OAuth（过渡期保留）
 │   ├── calendar_service.py   # Google Calendar 封装（过渡期保留）
 │   └── datetime_utils.py     # timezone-aware 日期时间工具
@@ -257,9 +263,9 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 │   ├── list_events.py        # 查询日程
 │   ├── create_event.py       # 创建日程
 │   ├── find_free_time.py     # 查找空闲时间
-│   ├── search_events.py      # 搜索日程（修改/删除第一步）
-│   ├── update_event.py       # 修改日程（预览+冲突检查+确认）
-│   ├── delete_event.py       # 删除日程（预览+确认）
+│   ├── search_events.py      # 搜索日程（只查不改）
+│   ├── update_event.py       # 修改日程（默认执行，--dry-run 预览）
+│   ├── delete_event.py       # 删除日程（默认执行，--dry-run 预览）
 │   ├── list_rooms.py         # 会议室清单与占用
 │   └── register_outlook_app.py # 应用注册引导（门户被租户限制时的一次性工具）
 └── tests/
@@ -269,6 +275,8 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
     ├── test_conflicts.py
     ├── test_event_match.py
     ├── test_update_delete.py
+    ├── test_targets.py
+    ├── test_notices.py
     ├── test_ics_parsing.py
     ├── test_outlook_cloud.py
     ├── test_outlook_parsing.py
@@ -289,5 +297,6 @@ Google 无法登录后暂未使用，代码保留在 `src/google_auth.py` / `src
 - Session 2：`create_event` + `find_free_time`（已完成，基于中国区 Graph 读写）
 - Session 3：`update_event` + `delete_event` + 事件搜索匹配 + 冲突检查（已完成，全部基于 mock 测试）
 - **当前建议：真实使用一到两周**，记录不顺手的细节（"下午"的边界、默认时长、默认提醒等），作为下一阶段的输入
-- Session 4：会议室（CDConfRoom）查询与预订：`scripts/list_rooms.py` + `create_event --room` / `update_event --room`（已完成，含 `getSchedule` 忙闲检查与占用拦截）
+- Session 4：会议室（CDConfRoom）查询与预订：`scripts/list_rooms.py` + `create_event --room` / `update_event --room`（已完成）
+- Session 5：流程提速（已完成）：`--query` 一次调用定位并执行、默认执行（`--dry-run` 预览）、冲突与会议室忙闲改为事后提醒
 - 之后候选：`create_event` 支持与会人（自动发会议邀请）、`find_free_time` 区分 showAs 空闲状态、清理 Google / ICS 备用后端

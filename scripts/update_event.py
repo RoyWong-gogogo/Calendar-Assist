@@ -1,14 +1,22 @@
-"""修改日程（安全模式：默认预览原→新，--yes 才真正执行）。
+"""修改日程（默认直接执行；--dry-run 才是预览）。
 
-必须通过真实 event id 修改（可先用 scripts/search_events.py 找到候选）。
-执行前自动做冲突检查（排除事件自身）。
+定位目标两种方式：
+    --event-id XXX                        直接用 id（来自 search_events 或上次汇报）
+    --query 关键词 --date tomorrow        脚本自己搜索定位（唯一命中即执行）
+
+流程（为降低延迟，写操作不再做事前冲突预检与会议室忙闲预检）：
+定位目标 → 恰好 1 个命中就直接改 → 汇报结果 + 事后提醒
+（新时段是否已有日程、会议室是否接受邀请）。
+0 个命中或 ≥2 个候选会停下并要求澄清（退出码 4）；--yes 保留为兼容空参数。
 
 用法（项目根目录）：
-    python scripts/update_event.py --event-id XXX --start 2026-09-14T16:00 --duration 60          # 预览
-    python scripts/update_event.py --event-id XXX --start 2026-09-14T16:00 --duration 60 --yes    # 执行
-    python scripts/update_event.py --event-id XXX --title "新标题" --location "新地点" --yes
-    python scripts/update_event.py --event-id XXX --room 801 --yes            # 改会议室
-    python scripts/update_event.py --event-id XXX --room "" --yes             # 取消会议室
+    python scripts/update_event.py --event-id XXX --start 2026-09-14T16:00 --duration 60
+    python scripts/update_event.py --query 壁仞 --date tomorrow --start 2026-09-14T16:00 --duration 60
+    python scripts/update_event.py --event-id XXX --title "新标题" --location "新地点"
+    python scripts/update_event.py --event-id XXX --room 801              # 改会议室
+    python scripts/update_event.py --event-id XXX --room ""               # 取消会议室
+    python scripts/update_event.py --event-id XXX --start 2026-09-14T16:00 --dry-run   # 只看不改
+    python scripts/update_event.py --event-id XXX --start 2026-09-14T16:00 --no-notice # 不要事后提醒
 """
 
 from __future__ import annotations
@@ -21,15 +29,29 @@ from pathlib import Path
 # 让脚本在任意工作目录下都能导入 src 包
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.conflicts import find_conflicts
 from src.datetime_utils import get_tz, parse_iso, to_iso
+from src.notices import (
+    event_line,
+    print_candidates,
+    print_conflict_notice,
+    print_event_detail,
+    print_no_match,
+    print_room_notice,
+)
 from src.rooms import expand_room
 from src.service_factory import get_calendar_service_class
+from src.targets import EXIT_NEEDS_CHOICE, locate_event, resolve_range
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="修改日程（默认预览，--yes 执行）")
-    parser.add_argument("--event-id", required=True, help="目标事件的 event id（来自 search_events）")
+    parser = argparse.ArgumentParser(description="修改日程（默认执行，--dry-run 预览）")
+    parser.add_argument("--event-id", help="目标事件的 event id（与 --query 二选一）")
+    parser.add_argument("--query", help="关键词定位目标（标题/地点/备注，需唯一命中）")
+    parser.add_argument("--date", help="定位搜索范围: today | tomorrow | yesterday | YYYY-MM-DD（默认今天）")
+    parser.add_argument("--from", dest="range_from", metavar="ISO",
+                        help="定位搜索范围开始（与 --to 成对；宁大勿小）")
+    parser.add_argument("--to", dest="range_to", metavar="ISO",
+                        help="定位搜索范围结束（与 --from 成对）")
     parser.add_argument("--title", help="新标题（可选）")
     parser.add_argument("--start", metavar="ISO", help="新开始时间（ISO 8601，可选）")
     parser.add_argument("--end", metavar="ISO", help="新结束时间（与 --duration 二选一）")
@@ -37,21 +59,42 @@ def main() -> int:
     parser.add_argument("--location", help="新地点（传空字符串表示清空）")
     parser.add_argument("--room", help="会议室（编号 / 名称 / 邮箱；传空字符串表示取消会议室）")
     parser.add_argument("--description", help="新备注（传空字符串表示清空）")
-    parser.add_argument("--yes", action="store_true", help="确认执行（缺省只预览）")
+    parser.add_argument("--dry-run", action="store_true", help="只预览不执行")
+    parser.add_argument("--no-notice", action="store_true", help="跳过事后冲突提醒")
+    parser.add_argument("--yes", action="store_true", help="兼容保留（现在默认即执行）")
     args = parser.parse_args()
 
-    has_time = bool(args.start or args.end or args.duration)
+    if bool(args.event_id) == bool(args.query):
+        parser.error("--event-id 与 --query 必须二选一")
     if args.end is not None and args.duration is not None:
         parser.error("--end 与 --duration 必须二选一")
-    if not (has_time or args.title is not None or args.location is not None
-            or args.description is not None or args.room is not None):
-        parser.error("至少提供一项要修改的字段")
+    if not (args.start or args.end or args.duration or args.title is not None
+            or args.location is not None or args.description is not None
+            or args.room is not None):
+        parser.error("至少提供一项要修改的字段（--start / --title / --room ...）")
 
     try:
         service = get_calendar_service_class()()
-        current = service.get_event(args.event_id)
 
-        # 计算生效后的新时间（未提供的字段沿用当前值）
+        # 1) 定位目标：按 id 直接读；按关键词先搜范围，再确认唯一命中
+        if args.event_id:
+            current = service.get_event(args.event_id)
+        else:
+            range_start, range_end = resolve_range(args.date, args.range_from, args.range_to)
+            current, candidates = locate_event(service, args.query, range_start, range_end)
+            if current is None:
+                if not candidates:
+                    print_no_match(args.query, range_start, range_end)
+                else:
+                    print_candidates(candidates)
+                return EXIT_NEEDS_CHOICE
+            if current.get("is_series_master"):
+                print("⚠️ 关键词命中的是重复日程的系列母事件，改动会作用于整个系列。")
+                print(f"- {event_line(current, get_tz())}")
+                print("请确认影响范围后，用 --event-id 明确指定再改。")
+                return EXIT_NEEDS_CHOICE
+
+        # 2) 计算修改后的值（未提供的字段沿用当前值）
         new_start = parse_iso(args.start) if args.start else current["start"]
         if args.end is not None:
             new_end = parse_iso(args.end)
@@ -77,72 +120,48 @@ def main() -> int:
             else:
                 new_rooms = []
 
-        # 时间有变化时做冲突检查（排除自身）
-        conflicts = []
-        if time_changed:
-            nearby = service.list_events(new_start, new_end)
-            conflicts = find_conflicts(nearby, new_start, new_end,
-                                       exclude_event_id=args.event_id)
-
-        # 会议室忙闲检查（新订 / 更换会议室，或时间有变化时）
-        room_busy: list = []
-        if room_address and (room_changed or time_changed):
-            if not hasattr(service, "get_schedule"):
-                raise RuntimeError(
-                    "会议室功能仅 Outlook 后端支持（当前后端没有 get_schedule）"
-                )
-            info = service.get_schedule([room_address], new_start, new_end)[0]
-            if info["error"]:
-                raise ValueError(
-                    f"会议室邮箱不存在或无法解析: {room_address}（{info['error']}）"
-                )
-            room_busy = info["busy"]
-
+        # 3) 展示原 → 新（写操作本身不再因冲突 / 占用而阻塞）
         tz = get_tz()
-        print("原日程:")
-        _print_event(current, tz)
-        print("准备修改为:")
-        _print_event({
+        preview = {
             "title": args.title if args.title is not None else current["title"],
             "start": new_start,
             "end": new_end,
+            "all_day": current.get("all_day", False),
             "location": args.location if args.location is not None else current["location"],
             "rooms": new_rooms,
             "description": (args.description if args.description is not None
                             else current["description"]),
-        }, tz)
+        }
+        print("原日程:")
+        print(f"- {event_line(current, tz)}")
+        print_event_detail(current)
+        print("修改为:")
+        print(f"- {event_line(preview, tz)}")
+        print_event_detail(preview)
 
         if current.get("is_series_master"):
             print("\n⚠️ 这是重复日程的系列母事件：修改将影响整个系列（所有场次）。")
         elif current.get("series_master_id"):
             print("\n⚠️ 这是重复日程的其中一场：修改仅影响这一场。")
 
-        if conflicts:
-            print(f"\n⚠️ 新时间与 {len(conflicts)} 个已有日程冲突:")
-            for ev in conflicts:
-                print(f"  - [{_fmt(ev['start'], ev['end'], tz)}] {ev['title']}")
-            print("如需仍要修改，请加 --yes 重新运行。")
-            return 3
-
-        if room_busy:
-            print(f"\n⚠️ 会议室 {room_address} 在新时段已被占用:")
-            for slot_start, slot_end in room_busy:
-                print(f"  - {_fmt(slot_start, slot_end, tz)}")
-            print("如需仍要修改，请加 --yes 重新运行。")
-            return 3
-
-        if not args.yes:
-            print("\n（预览模式，未实际修改。确认无误后加 --yes 执行。）")
+        if args.dry_run:
+            if not args.no_notice:
+                print()
+                print_conflict_notice(service, new_start, new_end,
+                                      exclude_event_id=current["id"], label="预览")
+            print("\n（--dry-run：未修改。去掉 --dry-run 即执行。）")
             return 0
 
+        # 4) 执行（改会议室时复用已经取到的与会人，省一次读取）
         updated = service.update_event(
-            args.event_id,
+            current["id"],
             title=args.title,
             start=new_start if args.start or args.duration or args.end else None,
             end=new_end if args.end is not None or args.duration is not None else None,
             location=args.location,
             description=args.description,
             room=args.room,
+            existing_attendees=current.get("attendees") if room_changed else None,
         )
     except RuntimeError as exc:
         print(f"[日历错误] {exc}", file=sys.stderr)
@@ -151,29 +170,19 @@ def main() -> int:
         print(f"[参数错误] {exc}", file=sys.stderr)
         return 2
 
-    print("\n✅ 已修改日程:")
-    _print_event(updated, get_tz())
+    # 5) 汇报结果 + 事后提醒
+    print()
+    print("✅ 已修改日程:")
+    print(f"- {event_line(updated, get_tz())}")
+    print_event_detail(updated)
+    if room_address:
+        print_room_notice(updated, room_address)
+    if time_changed and not args.no_notice:
+        print_conflict_notice(service, new_start, new_end,
+                              exclude_event_id=current["id"])
     return 0
-
-
-def _print_event(ev: dict, tz) -> None:
-    print(f"- [{_fmt(ev['start'], ev['end'], tz)}] {ev['title']}")
-    if ev.get("location"):
-        print(f"    地点: {ev['location']}")
-    rooms = ev.get("rooms")
-    if rooms:
-        print(f"    会议室: {', '.join(rooms)}")
-    description = (ev.get("description") or "").strip()
-    if description:
-        print(f"    备注: {description[:80]}" + ("…" if len(description) > 80 else ""))
-
-
-def _fmt(start, end, tz) -> str:
-    start, end = start.astimezone(tz), end.astimezone(tz)
-    if start.date() == end.date():
-        return f"{start:%Y-%m-%d %H:%M}~{end:%H:%M}"
-    return f"{start:%Y-%m-%d %H:%M} ~ {end:%Y-%m-%d %H:%M}"
 
 
 if __name__ == "__main__":
     sys.exit(main())
+

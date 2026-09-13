@@ -5,6 +5,10 @@
     python scripts/create_event.py --title "周会" --start 2026-09-14T10:00 --duration 60
     python scripts/create_event.py --title "评审" --start 2026-09-15T14:00 --duration 90 --location "会议室 A" --description "评审方案"
     python scripts/create_event.py --title "投资人访谈" --start 2026-09-15T10:00 --duration 60 --room 801
+    python scripts/create_event.py --title "AI 工具使用现状汇报讨论" --start 2026-09-14T14:00 --duration 60 --attendee Emma.Zhou@arraycomm.com
+
+创建成功后会做一次事后提醒（该时段是否已有其它日程、会议室是否接受邀请）；
+写操作本身不做事前冲突 / 忙闲预检（延迟高），需要预检时先跑 list_events / list_rooms。
 
 Codex 负责把自然语言换算成明确时间后调用本脚本，
 也可以直接调用 service_factory 返回的服务类的 create_event。
@@ -22,6 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.datetime_utils import get_tz, parse_iso, to_iso
+from src.notices import print_conflict_notice, print_room_notice
 from src.rooms import expand_room
 from src.service_factory import get_calendar_service_class
 
@@ -35,8 +40,12 @@ def main() -> int:
     parser.add_argument("--location", help="地点（可选）")
     parser.add_argument("--description", help="备注（可选）")
     parser.add_argument("--room", help="会议室（编号如 801 / 名称 / 完整邮箱），作为 resource 与会人预订")
+    parser.add_argument("--attendee", action="append", metavar="邮箱",
+                        help="与会人邮箱（可重复传入邀请多人，required 类型）")
     parser.add_argument("--force-room", action="store_true",
-                        help="会议室已被占用时仍强制创建")
+                        help="兼容保留（已不做事前忙闲预检，加不加都会创建）")
+    parser.add_argument("--no-notice", action="store_true",
+                        help="跳过创建后的事后冲突提醒")
     parser.add_argument("--json", action="store_true", help="以 JSON 输出（便于程序读取）")
     args = parser.parse_args()
 
@@ -52,29 +61,7 @@ def main() -> int:
         else:
             end = start + timedelta(minutes=args.duration)
         service = get_calendar_service_class()()
-        room_address = None
-        if args.room:
-            if not hasattr(service, "get_schedule"):
-                raise RuntimeError(
-                    "会议室预订仅 Outlook 后端支持（当前后端没有 get_schedule）"
-                )
-            room_address = expand_room(args.room)
-            info = service.get_schedule([room_address], start, end)[0]
-            if info["error"]:
-                raise ValueError(
-                    f"会议室邮箱不存在或无法解析: {room_address}（{info['error']}）"
-                )
-            if info["busy"] and not args.force_room:
-                tz = get_tz()
-                print(f"[会议室占用] {room_address} 在目标时段已被占用:", file=sys.stderr)
-                for slot_start, slot_end in info["busy"]:
-                    print(
-                        f"  - {slot_start.astimezone(tz):%Y-%m-%d %H:%M}"
-                        f"~{slot_end.astimezone(tz):%H:%M}",
-                        file=sys.stderr,
-                    )
-                print("请换一间会议室，或加 --force-room 强制创建。", file=sys.stderr)
-                return 3
+        room_address = expand_room(args.room) if args.room else None
         event = service.create_event(
             title=args.title,
             start=start,
@@ -82,6 +69,7 @@ def main() -> int:
             location=args.location,
             description=args.description,
             room=room_address,
+            attendees=args.attendee,
         )
     except RuntimeError as exc:
         # AuthError / OutlookApiError / IcsError 均为 RuntimeError 子类
@@ -101,6 +89,8 @@ def main() -> int:
             "location": event["location"],
             "description": event["description"],
             "rooms": event.get("rooms") or [],
+            "room_responses": event.get("room_responses") or [],
+            "attendees": args.attendee or [],
         }, ensure_ascii=False, indent=2))
         return 0
 
@@ -115,12 +105,18 @@ def main() -> int:
     print(f"- [{time_range}] {event['title']}")
     if event["location"]:
         print(f"    地点: {event['location']}")
+    if args.attendee:
+        print(f"    与会人: {', '.join(args.attendee)}")
     if event.get("rooms"):
         print(f"    会议室: {', '.join(event['rooms'])}")
     description = (event["description"] or "").strip()
     if description:
         print(f"    备注: {description}")
     print(f"    id: {event['id']}")
+    if room_address:
+        print_room_notice(event, room_address)
+    if not args.no_notice:
+        print_conflict_notice(service, start, end, exclude_event_id=event["id"])
     return 0
 
 

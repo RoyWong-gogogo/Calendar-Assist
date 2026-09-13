@@ -106,10 +106,12 @@ class OutlookCalendarService:
     def create_event(self, title: str, start: datetime, end: datetime,
                      location: str | None = None,
                      description: str | None = None,
-                     room: str | None = None) -> dict:
+                     room: str | None = None,
+                     attendees: list[str] | None = None) -> dict:
         """在默认（主）日历上创建日程，返回与 list_events 一致的事件字典。
 
-        title / start / end 必填；location / description / room 可选。
+        title / start / end 必填；location / description / room / attendees 可选。
+        attendees 是与会人邮箱列表，以 required（必须参加）类型邀请；
         room（编号 / 名称 / 邮箱）会作为 resource 与会人加入邀请，Exchange 据此
         真正占用会议室；未显式给 location 时用它作为地点显示名。会议室是否可用
         由调用方先用 get_schedule 检查（脚本层负责，见 scripts/create_event.py）。
@@ -124,6 +126,9 @@ class OutlookCalendarService:
             )
 
         room_address = expand_room(room) if room else None
+        invites = _person_attendees(attendees)
+        if room_address:
+            invites.append(_room_attendee(room_address))
 
         tz = get_tz()
         body = {
@@ -136,9 +141,10 @@ class OutlookCalendarService:
                 "displayName": location or room_label(room_address),
                 "locationEmailAddress": room_address,
             }
-            body["attendees"] = [_room_attendee(room_address)]
         elif location:
             body["location"] = {"displayName": location}
+        if invites:
+            body["attendees"] = invites
         if description:
             body["body"] = {"contentType": "text", "content": description}
 
@@ -226,13 +232,16 @@ class OutlookCalendarService:
         location: str | None = None,
         description: str | None = None,
         room: str | None = None,
+        existing_attendees: list[dict] | None = None,
     ) -> dict:
         """按 id 修改事件，仅提交显式提供的字段，返回更新后的事件字典。
 
         - None（默认）表示该字段保持不变；location / description 传空字符串表示清空
         - room=None 表示会议室不变；room="" 表示取消会议室；其他值表示改为该会议室
-          （会议室以 resource 与会人形式存在；改会议室时会先读取原事件，
-          保留其他非 resource 与会人，避免把他们一起冲掉）
+          （会议室以 resource 与会人形式存在；改会议室时会先拿到原有与会人，
+          保留其他非 resource 与会人，避免把他们一起冲掉。
+          existing_attendees 可传 get_event() 返回的 attendees（简洁格式），
+          省掉这里多读一次事件的往返；不传时自己读）
         - 同时提供 start/end 时校验相对关系；只改其一时与旧值的组合
           由调用方（脚本层先 get_event）保证有效
         - 重复日程：对实例 id 操作仅影响该场，对系列母事件 id 操作影响
@@ -260,9 +269,14 @@ class OutlookCalendarService:
         room_address = None
         if room is not None:
             room_address = expand_room(room) if room.strip() else None
+            source = (
+                existing_attendees
+                if existing_attendees is not None
+                else _attendee_list(self._get_raw_event(event_id).get("attendees"))
+            )
             attendees = [
-                attendee
-                for attendee in (self._get_raw_event(event_id).get("attendees") or [])
+                _graph_attendee(attendee)
+                for attendee in source
                 if (attendee.get("type") or "").lower() != "resource"
             ]
             if room_address:
@@ -466,6 +480,25 @@ def _graph_datetime(dt: datetime, tz) -> dict:
     }
 
 
+def _person_attendees(addresses: list[str] | None) -> list[dict]:
+    """把与会人邮箱列表转成 required（必须参加）类型的 Graph 与会人条目。
+
+    空值忽略；缺少 @ 的条目直接报错，避免邀请被静默丢弃。
+    """
+    result: list[dict] = []
+    for raw in addresses or []:
+        address = (raw or "").strip()
+        if not address:
+            continue
+        if "@" not in address:
+            raise ValueError(f"与会人邮箱格式不正确: {raw!r}")
+        result.append({
+            "type": "required",
+            "emailAddress": {"address": address},
+        })
+    return result
+
+
 def _room_attendee(address: str) -> dict:
     """会议室在 Graph 事件里的写法：resource 类型与会人（Exchange 据此占用会议室）。"""
     return {
@@ -474,16 +507,34 @@ def _room_attendee(address: str) -> dict:
     }
 
 
-def _resource_addresses(attendees) -> list[str]:
-    """取出事件中 resource 类型（会议室 / 设备）与会人的邮箱地址。"""
-    result: list[str] = []
+def _attendee_list(attendees) -> list[dict]:
+    """把 Graph 与会人数组转成简洁格式（含类型与响应状态）。
+
+    - type：required / optional / resource（resource 即会议室、设备）
+    - response：none / accepted / declined / tentativelyAccepted / notResponded
+      —— 会议室是否真的订上就看它，不依赖有延迟的跨邮箱忙闲视图
+    """
+    result: list[dict] = []
     for attendee in attendees or []:
-        if (attendee.get("type") or "").lower() != "resource":
+        email = attendee.get("emailAddress") or {}
+        address = (email.get("address") or "").strip()
+        if not address:
             continue
-        address = ((attendee.get("emailAddress") or {}).get("address") or "").strip()
-        if address:
-            result.append(address)
+        result.append({
+            "type": (attendee.get("type") or "").lower(),
+            "address": address,
+            "name": email.get("name") or None,
+            "response": (attendee.get("status") or {}).get("response") or None,
+        })
     return result
+
+
+def _graph_attendee(entry: dict) -> dict:
+    """把简洁格式的与会人转回 Graph 写入结构（保留类型与显示名）。"""
+    email = {"address": entry["address"]}
+    if entry.get("name"):
+        email["name"] = entry["name"]
+    return {"type": entry.get("type") or "required", "emailAddress": email}
 
 
 def _busy_from_view(view: str, start: datetime,
@@ -530,6 +581,8 @@ def _to_event_dict(item: dict) -> dict:
     """把 Graph 返回的事件对象转成与 Google 实现一致的简洁字典。"""
     location = (item.get("location") or {}).get("displayName") or None
     body = (item.get("body") or {}).get("content") or None
+    attendees = _attendee_list(item.get("attendees"))
+    resources = [entry for entry in attendees if entry["type"] == "resource"]
     return {
         "id": item.get("id", ""),
         "title": item.get("subject") or "(无标题)",
@@ -538,7 +591,9 @@ def _to_event_dict(item: dict) -> dict:
         "all_day": bool(item.get("isAllDay", False)),
         "location": location,
         "description": _strip_html(body) if body else None,
-        "rooms": _resource_addresses(item.get("attendees")),
+        "rooms": [entry["address"] for entry in resources],
+        "room_responses": resources,
+        "attendees": attendees,
         "series_master_id": item.get("seriesMasterId"),
         "is_series_master": bool(item.get("recurrence")),
     }
