@@ -25,5 +25,5 @@ def get_calendar_service_class():
 
         return CalendarService
     raise ValueError(
-        f"未知的 CALENDAR_PROVIDER={CALENDAR_PROVIDER!r}，当前支持: outlook / google"
+        f"未知的 CALENDAR_PROVIDER={CALENDAR_PROVIDER!r}，当前支持: outlook / ics / google"
     )
